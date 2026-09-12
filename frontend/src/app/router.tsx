@@ -13,6 +13,11 @@ import { ShipmentListPage } from '../pages/ShipmentListPage';
 import { CreateVehiclePage } from '../pages/CreateVehiclePage';
 import { VehicleListPage } from '../pages/VehicleListPage';
 import { MarketIntelligencePage } from '../pages/MarketIntelligencePage';
+import { VesselTrackingPage } from '../pages/VesselTrackingPage';
+import { FreightForecastPage } from '../pages/FreightForecastPage';
+import { RoutePlannerPage } from '../pages/RoutePlannerPage';
+import { PortsPage } from '../pages/PortsPage';
+import { PlanCharterPage } from '../pages/PlanCharterPage';
 
 export const router = createBrowserRouter([
   {
@@ -48,6 +53,11 @@ export const router = createBrowserRouter([
           { path: '/vehicles', element: <VehicleListPage /> },
           { path: '/vehicles/create', element: <CreateVehiclePage /> },
           { path: '/market-intelligence', element: <MarketIntelligencePage /> },
+          { path: '/vessel-tracking', element: <VesselTrackingPage /> },
+          { path: '/freight-forecast', element: <FreightForecastPage /> },
+          { path: '/route-planner', element: <RoutePlannerPage /> },
+          { path: '/ports', element: <PortsPage /> },
+          { path: '/plan-charter', element: <PlanCharterPage /> },
         ],
       },
     ],

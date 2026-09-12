@@ -45,7 +45,7 @@ interface SavedScenario {
   forecasts: FreightForecast[];
 }
 
-const scenarioStorageKey = 'reroute.market-scenarios';
+const scenarioStorageKey = 'seanexus.market-scenarios';
 
 function dateToDayOfYear(date: string) {
   const value = new Date(date + 'T00:00:00');
@@ -143,7 +143,7 @@ export function MarketIntelligencePage() {
   const exportReport = () => {
     if (!forecasts.length) return;
     const rows = [
-      ['ReRoute freight forecast report'],
+      ['SeaNexus freight forecast report'],
       ['Route', origin + ' to ' + destination],
       ['Cargo volume MT', cargoVolume.toString()],
       ['Current freight USD/MT', currentRate.toString()],
@@ -161,7 +161,7 @@ export function MarketIntelligencePage() {
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
     const link = document.createElement('a');
     link.href = url;
-    link.download = 'reroute-freight-forecast.csv';
+    link.download = 'seanexus-freight-forecast.csv';
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -194,7 +194,7 @@ export function MarketIntelligencePage() {
         <div className="relative flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <p className="text-sm font-semibold tracking-wide text-cyan-300">
-              REROUTE / MARKET INTELLIGENCE
+              SEANEXUS / MARKET INTELLIGENCE
             </p>
             <h1 className="mt-2 text-3xl font-bold tracking-tight sm:text-4xl">
               Make the freight decision before the market moves.

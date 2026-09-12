@@ -8,8 +8,10 @@
   body {
     margin: 0;
     min-width: 320px;
-    background: #070b16;
-    color: #e2e8f0;
+    background: #f4f8fc;
+    color: #0f172a;
+    font-synthesis: none;
+    text-rendering: optimizeLegibility;
   }
 
   * {
@@ -18,5 +20,26 @@
 
   a {
     text-decoration: none;
+  }
+
+  button,
+  input,
+  select,
+  textarea {
+    font: inherit;
+  }
+
+  button:focus-visible,
+  a:focus-visible,
+  input:focus-visible,
+  select:focus-visible,
+  textarea:focus-visible {
+    outline: 3px solid rgb(34 211 238 / 35%);
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background: #a5f3fc;
+    color: #0f172a;
   }
 }
