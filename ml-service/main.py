@@ -1,15 +1,18 @@
 from pathlib import Path
 import json
 from csv import DictWriter
-from datetime import date as Date
+from datetime import date as Date, datetime
 import numpy as np
-from fastapi import FastAPI
+import pandas as pd
+import joblib
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from xgboost import XGBRegressor
 
 BASE = Path(__file__).resolve().parent / "models"
 DATA_DIR = Path(__file__).resolve().parent / "data"
+CATBOOST_BASE = BASE / "catboost"
 MODELS = {
     14: XGBRegressor(),
     30: XGBRegressor(),
@@ -22,6 +25,14 @@ FILES = {
 }
 for horizon, model in MODELS.items():
     model.load_model(BASE / FILES[horizon])
+
+CATBOOST_MODELS = {}
+CATBOOST_LOAD_ERROR = None
+try:
+    for horizon in (14, 30, 60):
+        CATBOOST_MODELS[horizon] = joblib.load(CATBOOST_BASE / f"catboost_freight_rate_{horizon}_day_model.joblib")
+except Exception as error:
+    CATBOOST_LOAD_ERROR = str(error)
 
 FEATURES = ["day_of_year", "day_of_year_sin", "freight_rate_usd_mt", "bunker_price_usd_mt", "days_since_start"]
 
@@ -42,6 +53,82 @@ class MarketDataRecord(BaseModel):
 
 class MarketDataImport(BaseModel):
     records: list[MarketDataRecord] = Field(..., min_length=61)
+
+class AdvancedForecastInput(BaseModel):
+    origin_port: str = "Hay_Point_AU"
+    destination_port: str = "Paradip"
+    origin_country: str = "Australia"
+    cargo_type: str = "Thermal_Coal"
+    cargo_quantity_mt: float = Field(100000, gt=0)
+    vessel_type: str = "Panamax"
+    vessel_dwt_mt: float = Field(75000, gt=0)
+    vessel_age_years: float = Field(10, ge=0, le=80)
+    vessel_draft_m: float = Field(13.8, gt=0, le=30)
+    vessel_loa_m: float = Field(225, gt=0, le=500)
+    vessel_beam_m: float = Field(32.3, gt=0, le=100)
+    distance_nm: float = Field(4892, gt=0)
+    freight_rate_usd_mt: float = Field(..., gt=0)
+    bunker_price_usd_mt: float = Field(..., gt=0)
+    commodity_price_usd_mt: float = Field(125, gt=0)
+    origin_congestion_pct: float = Field(50, ge=0, le=100)
+    destination_congestion_pct: float = Field(50, ge=0, le=100)
+    origin_waiting_hours: float = Field(24, ge=0)
+    destination_waiting_hours: float = Field(24, ge=0)
+    vessel_availability: float = Field(120, ge=0)
+    freight_volume_thousand_mt: float = Field(5_000_000, ge=0)
+
+def season_for(month: int) -> str:
+    if month in (12, 1, 2):
+        return "Winter"
+    if month in (3, 4, 5):
+        return "Spring"
+    if month in (6, 7, 8):
+        return "Summer"
+    return "Autumn"
+
+def advanced_feature_row(x: AdvancedForecastInput):
+    now = datetime.utcnow()
+    month = now.month
+    quarter = (month - 1) // 3 + 1
+    day_of_year = now.timetuple().tm_yday
+    total_congestion = (x.origin_congestion_pct + x.destination_congestion_pct) / 2
+    total_waiting = x.origin_waiting_hours + x.destination_waiting_hours
+    return {
+        "origin_port": x.origin_port,
+        "destination_port": x.destination_port,
+        "origin_country": x.origin_country,
+        "cargo_type": x.cargo_type,
+        "cargo_quantity_mt": x.cargo_quantity_mt,
+        "vessel_type": x.vessel_type,
+        "vessel_dwt_mt": x.vessel_dwt_mt,
+        "vessel_age_years": x.vessel_age_years,
+        "vessel_draft_m": x.vessel_draft_m,
+        "vessel_loa_m": x.vessel_loa_m,
+        "vessel_beam_m": x.vessel_beam_m,
+        "distance_nm": x.distance_nm,
+        "freight_rate_usd_mt": x.freight_rate_usd_mt,
+        "bunker_price_usd_mt": x.bunker_price_usd_mt,
+        "commodity_price_usd_mt": x.commodity_price_usd_mt,
+        "origin_congestion_pct": x.origin_congestion_pct,
+        "destination_congestion_pct": x.destination_congestion_pct,
+        "origin_waiting_hours": x.origin_waiting_hours,
+        "destination_waiting_hours": x.destination_waiting_hours,
+        "vessel_availability": x.vessel_availability,
+        "freight_volume_thousand_mt": x.freight_volume_thousand_mt,
+        "year": now.year,
+        "month": month,
+        "quarter": quarter,
+        "day_of_week": now.weekday(),
+        "day_of_year": day_of_year,
+        "season": season_for(month),
+        "route": f"{x.origin_port}_to_{x.destination_port}",
+        "total_congestion_pct": total_congestion,
+        "total_waiting_hours": total_waiting,
+        "congestion_gap_pct": abs(x.origin_congestion_pct - x.destination_congestion_pct),
+        "cargo_utilization_pct": min(100, x.cargo_quantity_mt / x.vessel_dwt_mt * 100),
+        "month_sin": float(np.sin((2 * np.pi * month) / 12)),
+        "month_cos": float(np.cos((2 * np.pi * month) / 12)),
+    }
 
 def vectorize(x: ForecastInput):
     return np.array([[getattr(x, f) for f in FEATURES]], dtype=float)
@@ -107,6 +194,12 @@ def health():
         "models_loaded": [14, 30, 60],
         "features": FEATURES,
         "data_source": model_source(),
+        "catboost": {
+            "status": "ok" if CATBOOST_MODELS else "unavailable",
+            "models_loaded": sorted(CATBOOST_MODELS.keys()),
+            "feature_count": len(CATBOOST_MODELS[14]["features"]) if 14 in CATBOOST_MODELS else 0,
+            "error": CATBOOST_LOAD_ERROR,
+        },
     }
 
 @app.post("/predict")
@@ -118,6 +211,25 @@ def predict(x: ForecastInput):
         "forecasts": forecasts,
         "data_source": model_source(),
         "disclaimer": "Prototype model output. Validate imported market data before production use.",
+    }
+
+@app.post("/predict/advanced")
+def predict_advanced(x: AdvancedForecastInput):
+    if not CATBOOST_MODELS:
+        raise HTTPException(status_code=503, detail={"code": "CATBOOST_UNAVAILABLE", "message": "CatBoost models are unavailable", "detail": CATBOOST_LOAD_ERROR})
+    row = advanced_feature_row(x)
+    current = x.freight_rate_usd_mt
+    forecasts = []
+    for horizon in (14, 30, 60):
+        bundle = CATBOOST_MODELS[horizon]
+        frame = pd.DataFrame([[row[name] for name in bundle["features"]]], columns=bundle["features"])
+        prediction = bundle["model"].predict(frame)[0]
+        forecasts.append(result(horizon, current, prediction))
+    return {
+        "forecasts": forecasts,
+        "data_source": "CatBoost multi-horizon model",
+        "features_used": CATBOOST_MODELS[14]["features"],
+        "disclaimer": "Predictions use the supplied CatBoost model. Validate external market inputs before operational use.",
     }
 
 @app.post("/data/import")

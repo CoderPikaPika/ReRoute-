@@ -4,5 +4,6 @@ xgboost
 catboost
 joblib
 numpy
+pandas
 pydantic
 scikit-learn

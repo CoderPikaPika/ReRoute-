@@ -23,6 +23,30 @@ export interface ForecastResponse {
   disclaimer?: string;
 }
 
+export interface AdvancedForecastRequest {
+  origin_port: string;
+  destination_port: string;
+  origin_country: string;
+  cargo_type: string;
+  cargo_quantity_mt: number;
+  vessel_type: string;
+  vessel_dwt_mt: number;
+  vessel_age_years: number;
+  vessel_draft_m: number;
+  vessel_loa_m: number;
+  vessel_beam_m: number;
+  distance_nm: number;
+  freight_rate_usd_mt: number;
+  bunker_price_usd_mt: number;
+  commodity_price_usd_mt: number;
+  origin_congestion_pct: number;
+  destination_congestion_pct: number;
+  origin_waiting_hours: number;
+  destination_waiting_hours: number;
+  vessel_availability: number;
+  freight_volume_thousand_mt: number;
+}
+
 export class ForecastService {
   public async status() {
     try {
@@ -57,6 +81,24 @@ export class ForecastService {
 
     if (!response.ok) {
       throw new AppError(502, 'ML_SERVICE_ERROR', 'The freight forecasting service rejected this prediction request.');
+    }
+    return response.json() as Promise<ForecastResponse>;
+  }
+
+  public async predictAdvanced(input: AdvancedForecastRequest): Promise<ForecastResponse> {
+    let response: Response;
+    try {
+      response = await fetch(env.ML_SERVICE_URL + '/predict/advanced', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+        signal: AbortSignal.timeout(15_000),
+      });
+    } catch {
+      throw new AppError(503, 'ML_SERVICE_UNAVAILABLE', 'The CatBoost forecasting service is not available. Restart the ML service on port 8000.');
+    }
+    if (!response.ok) {
+      throw new AppError(502, 'ML_SERVICE_ERROR', 'The CatBoost forecasting service rejected this prediction request.');
     }
     return response.json() as Promise<ForecastResponse>;
   }
