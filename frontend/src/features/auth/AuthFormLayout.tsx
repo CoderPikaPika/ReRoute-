@@ -11,8 +11,9 @@ export function AuthFormLayout({ title, subtitle, footer, children }: AuthFormLa
   return (
     <main className="grid min-h-screen bg-slate-950 lg:grid-cols-[1.05fr_0.95fr]">
       <section className="hidden bg-[radial-gradient(circle_at_top_left,_#0e7490,_#0f172a_58%)] p-12 lg:flex lg:flex-col lg:justify-between">
-        <Link className="text-lg font-bold tracking-tight text-white" to="/login">
-          Sea<span className="text-cyan-300">Nexus</span>
+        <Link className="flex items-center gap-2 text-lg font-bold tracking-tight text-white" to="/login">
+          <img alt="SeaNexus" className="h-10 w-10 rounded-full object-contain mix-blend-screen" src="/seanexus-logo.jpeg" />
+          <span>Sea<span className="text-cyan-300">Nexus</span></span>
         </Link>
         <div className="max-w-lg">
           <p className="text-sm font-semibold uppercase tracking-[0.2em] text-cyan-300">
@@ -42,8 +43,9 @@ export function AuthFormLayout({ title, subtitle, footer, children }: AuthFormLa
         </video>
         <div className="absolute inset-0 -z-10 bg-[linear-gradient(135deg,rgba(244,251,255,.68),rgba(225,243,255,.52))]" />
         <div className="w-full max-w-md">
-          <Link className="text-lg font-bold tracking-tight text-slate-950 lg:hidden" to="/login">
-            SeaNexus
+          <Link className="flex items-center gap-2 text-lg font-bold tracking-tight text-slate-950 lg:hidden" to="/login">
+            <img alt="SeaNexus" className="h-9 w-9 rounded-full object-contain mix-blend-multiply" src="/seanexus-logo.jpeg" />
+            <span>SeaNexus</span>
           </Link>
           <h2 className="mt-10 text-3xl font-bold tracking-tight text-slate-950 lg:mt-0">
             {title}

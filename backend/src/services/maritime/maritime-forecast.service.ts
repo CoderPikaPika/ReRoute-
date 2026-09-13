@@ -37,7 +37,7 @@ const cargoProfiles: Record<string, CargoProfile> = {
 };
 
 export class MaritimeForecastService {
-  public async createRun(input: { requestedBy: string; cargoType: string; vesselClass: VesselClass; originPortId?: string; destinationPortId?: string }) {
+  public async createRun(input: { requestedBy: string; cargoType: string; vesselClass: VesselClass; originPortId?: string; destinationPortId?: string; cargoQuantityMt?: number }) {
     const cargo = resolveCargoProfile(input.cargoType);
     const [rate, bunker, allPorts, vesselAvailability] = await Promise.all([
       maritimeRepository.findLatestMarketObservation({ cargoType: cargo.observationCargoType, vesselClass: input.vesselClass, rateType: 'SPOT', unit: 'USD_PER_MT' }),
@@ -67,7 +67,7 @@ export class MaritimeForecastService {
       destination_port: destinationModelCode,
       origin_country: originPort?.country ?? 'Australia',
       cargo_type: cargo.modelCargoType,
-      cargo_quantity_mt: profile.dwt * 0.85,
+      cargo_quantity_mt: input.cargoQuantityMt ?? profile.dwt * 0.85,
       vessel_type: titleCase(input.vesselClass),
       vessel_dwt_mt: profile.dwt,
       vessel_age_years: profile.age,
@@ -116,6 +116,34 @@ export class MaritimeForecastService {
       bunkerPriceUsdMt: bunker.value,
       source: { rate: rate.source, bunker: bunker.source, model: prediction.data_source },
       forecast: prediction.forecasts,
+      qualityStatus: run.qualityStatus,
+      warnings: run.warnings,
+      createdAt: run.createdAt.toISOString(),
+    };
+  }
+
+  public async getLatestRun(requestedBy: string) {
+    const run = await maritimeRepository.findLatestForecastRun(requestedBy);
+    if (!run) return null;
+    const currentRate = run.historical.at(-1)?.value ?? 0;
+    return {
+      id: run.id,
+      cargoType: run.cargoType,
+      vesselClass: run.vesselClass,
+      currentRateUsdMt: currentRate,
+      bunkerPriceUsdMt: 0,
+      source: { rate: 'Saved forecast input', bunker: 'Saved forecast input', model: `${run.model.name} ${run.model.version}`.trim() },
+      forecast: run.forecast.map((item) => {
+        const change = item.p50 - currentRate;
+        return {
+          forecast_days: Math.max(1, Math.round((item.targetAt.getTime() - run.createdAt.getTime()) / 86_400_000)),
+          predicted_freight_rate_usd_mt: item.p50,
+          current_freight_rate_usd_mt: currentRate,
+          change_usd_mt: change,
+          change_percent: currentRate ? (change / currentRate) * 100 : 0,
+          direction: change > 0.01 ? 'Increase' as const : change < -0.01 ? 'Decrease' as const : 'Stable' as const,
+        };
+      }),
       qualityStatus: run.qualityStatus,
       warnings: run.warnings,
       createdAt: run.createdAt.toISOString(),

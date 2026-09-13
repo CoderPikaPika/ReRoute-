@@ -30,10 +30,12 @@ function markerColor(status: string): string {
 }
 
 export function MaritimeVesselMap({ vessels, selectedVesselId, selectedTrack = [], expanded = false, onSelect }: Props) {
+  const panelRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const markersRef = useRef<maplibregl.Marker[]>([]);
   const [ready, setReady] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
@@ -53,7 +55,17 @@ export function MaritimeVesselMap({ vessels, selectedVesselId, selectedTrack = [
     const animationFrame = requestAnimationFrame(resize);
     window.addEventListener('resize', resize);
     return () => { cancelAnimationFrame(animationFrame); window.removeEventListener('resize', resize); };
-  }, [expanded]);
+  }, [expanded, isFullscreen]);
+
+  useEffect(() => {
+    const syncFullscreen = () => {
+      const fullscreen = document.fullscreenElement === panelRef.current;
+      setIsFullscreen(fullscreen);
+      window.setTimeout(() => mapRef.current?.resize(), 0);
+    };
+    document.addEventListener('fullscreenchange', syncFullscreen);
+    return () => document.removeEventListener('fullscreenchange', syncFullscreen);
+  }, []);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -106,7 +118,15 @@ export function MaritimeVesselMap({ vessels, selectedVesselId, selectedTrack = [
     }
   }, [ready, selectedTrack, selectedVesselId, vessels]);
 
-  return <div ref={containerRef} className="h-full min-h-[570px] w-full" aria-label="Interactive vessel-position map" />;
+  const toggleFullscreen = async () => {
+    if (document.fullscreenElement === panelRef.current) {
+      await document.exitFullscreen();
+      return;
+    }
+    await panelRef.current?.requestFullscreen?.();
+  };
+
+  return <div ref={panelRef} className="relative h-full min-h-[570px] w-full overflow-hidden [&:fullscreen]:h-screen [&:fullscreen]:w-screen" aria-label="Interactive vessel-position map"><div ref={containerRef} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }} /><button aria-label={isFullscreen ? 'Exit full screen map' : 'Open map in full screen'} className="absolute right-3 top-3 z-10 rounded-md bg-white/95 px-2.5 py-1.5 text-xs font-bold text-[#166cbf] shadow hover:bg-white" onClick={() => { void toggleFullscreen(); }} type="button">{isFullscreen ? '× Close' : '⛶ Full screen'}</button></div>;
 }
 
 function escapeHtml(value: string): string {

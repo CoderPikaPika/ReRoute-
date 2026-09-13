@@ -37,6 +37,7 @@ export class MarineWeatherService {
         'current',
         'wave_height,wave_direction,wave_period,wind_wave_height,swell_wave_height,sea_surface_temperature,ocean_current_velocity,ocean_current_direction',
       );
+      providerUrl.searchParams.set('cell_selection', 'sea');
       providerUrl.searchParams.set('timezone', 'UTC');
 
       const providerResponse = await fetch(providerUrl, { signal: AbortSignal.timeout(8000) });

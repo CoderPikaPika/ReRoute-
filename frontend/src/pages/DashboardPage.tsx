@@ -1,117 +1,693 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
-import { useAuth } from '../features/auth/useAuth';
-import { useDashboard } from '../features/dashboard/hooks';
-import { getFreightForecast, type FreightForecast } from '../services/marketApi';
+import { MaritimeVesselMap } from '../components/map/MaritimeVesselMap';
+import {
+  useLatestMaritimeForecastRun,
+  useMaritimeMarketObservations,
+  useMaritimePorts,
+  useMaritimeVesselTrack,
+  useMaritimeVessels,
+} from '../features/maritime/hooks';
+import {
+  type MaritimeForecastRun,
+  type MaritimeMarketObservation,
+  type VesselClass,
+} from '../services/maritimeApi';
 
-const portOptions = ['Hay Point (AUS)', 'Newcastle (AUS)', 'Paradip (IND)', 'Visakhapatnam (IND)', 'Dhamra (IND)', 'Gangavaram (IND)'];
+const horizonOptions = [14, 30, 60] as const;
 
-const portSnapshot = [
-  ['Paradip', 'Normal', '1–2 days', 'emerald'],
-  ['Vizag', 'Normal', '1–3 days', 'emerald'],
-  ['Gangavaram', 'Moderate', '2–4 days', 'amber'],
-  ['Gopalpur', 'Normal', '1–2 days', 'emerald'],
-  ['Dhamra', 'Moderate', '2–5 days', 'amber'],
-  ['Haldia', 'Normal', '1–3 days', 'emerald'],
-];
-
-const demoVessels = [
-  ['MV Ocean Pride', 'Panamax', 'En route', '12 Oct', 'emerald'],
-  ['Cape Harmony', 'Capesize', 'At port', '8 Oct', 'amber'],
-  ['Eastern Star', 'Supramax', 'En route', '6 Oct', 'emerald'],
-  ['Sea Voyager', 'Handysize', 'At port', '14 Oct', 'amber'],
-];
-
-function formatRate(value: number) {
-  return 'USD ' + value.toLocaleString(undefined, { maximumFractionDigits: 2 }) + '/MT';
+function vesselClassLabel(value: VesselClass): string {
+  return value === 'HANDYSIZE'
+    ? 'Handysize'
+    : value === 'SUPRAMAX'
+      ? 'Supramax'
+      : value === 'PANAMAX'
+        ? 'Panamax'
+        : value === 'CAPESIZE'
+          ? 'Capesize'
+          : 'Other';
 }
 
-function vesselForQuantity(quantity: number) {
-  if (quantity <= 38000) return 'Handysize';
-  if (quantity <= 58000) return 'Supramax';
-  if (quantity <= 75000) return 'Panamax';
-  return 'Capesize';
+function formatRate(value: number | undefined): string {
+  return value === undefined
+    ? '—'
+    : `USD ${value.toLocaleString(undefined, { maximumFractionDigits: 2 })}/MT`;
 }
 
-export function DashboardPage() {
-  const { user } = useAuth();
-  const navigate = useNavigate();
-  const { data, isLoading } = useDashboard(user?.role ?? 'SHIPPER');
-  const [origin, setOrigin] = useState('Hay Point (AUS)');
-  const [destination, setDestination] = useState('Paradip (IND)');
-  const [cargoType, setCargoType] = useState('Thermal coal');
-  const [quantity, setQuantity] = useState(70000);
-  const [duration, setDuration] = useState(30);
-  const [forecasts, setForecasts] = useState<FreightForecast[]>([]);
-  const [forecastLoading, setForecastLoading] = useState(false);
-  const [forecastError, setForecastError] = useState('');
-  const currentRate = 21.8;
-  const selectedForecast = forecasts.find((item) => item.forecast_days === duration);
-  const recommendedVessel = vesselForQuantity(quantity);
-  const activeValue = data?.metrics.active ?? data?.metrics.activeShipments ?? data?.metrics.inTransit ?? 0;
-  const totalValue = data?.metrics.total ?? data?.metrics.totalVehicles ?? data?.metrics.totalUsers ?? 0;
-  const chartPoints = useMemo(() => {
-    const values = [currentRate, ...forecasts.map((item) => item.predicted_freight_rate_usd_mt)];
-    const minimum = Math.min(...values) - 1;
-    const range = Math.max(1, Math.max(...values) - minimum + 1);
-    return values.map((value, index) => {
-      const x = 38 + index * 85;
-      const y = 176 - ((value - minimum) / range) * 125;
-      return x + ',' + y;
-    }).join(' ');
-  }, [forecasts]);
+function formatTimestamp(value: string | undefined): string {
+  if (!value) return 'Awaiting data';
+  return new Intl.DateTimeFormat(undefined, {
+    day: 'numeric',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(value));
+}
 
-  async function generateRecommendation() {
-    setForecastLoading(true);
-    setForecastError('');
-    try {
-      const today = new Date();
-      const start = new Date(today.getFullYear(), 0, 0);
-      const day = Math.max(1, Math.floor((today.getTime() - start.getTime()) / 86400000));
-      const result = await getFreightForecast({
-        dayOfYear: day,
-        freightRateUsdMt: currentRate,
-        bunkerPriceUsdMt: 4.2,
-        daysSinceStart: 365,
-      });
-      setForecasts(result);
-    } catch {
-      setForecastError('Forecast service is offline. Start the backend and Python service, then try again.');
-    } finally {
-      setForecastLoading(false);
-    }
+function statusTone(status: string | undefined): string {
+  if (status === 'LOW' || status === 'OPERATIONAL' || status === 'UNDER_WAY')
+    return 'text-emerald-700';
+  if (status === 'MODERATE' || status === 'AT_PORT' || status === 'MOORED') return 'text-amber-700';
+  if (status === 'HIGH' || status === 'CLOSED') return 'text-rose-700';
+  return 'text-slate-500';
+}
+
+function sourceLabel(source: string | undefined, estimated?: boolean): string {
+  if (!source) return 'No source';
+  if (estimated) return `${source} · estimated`;
+  if (/aisstream/i.test(source)) return 'AISStream feed';
+  if (/open-meteo/i.test(source)) return 'Open-Meteo';
+  return source.replace(/[_-]/g, ' ');
+}
+
+function marketCargoForSeries(cargo: string): string {
+  return cargo === 'Thermal coal' ? cargo : 'Thermal coal';
+}
+
+interface TrendChartProps {
+  observations: MaritimeMarketObservation[];
+  forecast: MaritimeForecastRun | null;
+  activeHorizon: number;
+}
+
+function RateTrendChart({ observations, forecast, activeHorizon }: TrendChartProps) {
+  const { actual, actualPath, forecastPath, points, maxValue, minValue } = useMemo(() => {
+    const actual = [...observations]
+      .sort((left, right) => new Date(left.asOf).getTime() - new Date(right.asOf).getTime())
+      .slice(-12);
+    const forecastValues = forecast?.forecast ?? [];
+    const values = [
+      ...actual.map((item) => item.value),
+      ...forecastValues.map((item) => item.predicted_freight_rate_usd_mt),
+    ];
+    const minimum = values.length ? Math.min(...values) * 0.94 : 0;
+    const maximum = values.length ? Math.max(...values) * 1.06 : 1;
+    const range = Math.max(maximum - minimum, 1);
+    const x = (index: number) => 34 + (index / Math.max(values.length - 1, 1)) * 254;
+    const y = (value: number) => 164 - ((value - minimum) / range) * 123;
+    const actualPoints = actual.map((item, index) => ({
+      x: x(index),
+      y: y(item.value),
+      value: item.value,
+      label: item.asOf,
+    }));
+    const forecastPoints = forecastValues.map((item, index) => ({
+      x: x(actual.length + index),
+      y: y(item.predicted_freight_rate_usd_mt),
+      value: item.predicted_freight_rate_usd_mt,
+      label: `${item.forecast_days} days`,
+    }));
+    const actualPath = actualPoints.map((point) => `${point.x},${point.y}`).join(' ');
+    const forecastPath =
+      actualPoints.length && forecastPoints.length
+        ? `${actualPoints[actualPoints.length - 1].x},${actualPoints[actualPoints.length - 1].y} ${forecastPoints.map((point) => `${point.x},${point.y}`).join(' ')}`
+        : '';
+    return {
+      actual,
+      actualPath,
+      forecastPath,
+      points: forecastPoints,
+      maxValue: maximum,
+      minValue: minimum,
+    };
+  }, [forecast, observations]);
+
+  if (!actual.length) {
+    return (
+      <div className="mt-4 grid h-48 place-items-center rounded-lg border border-dashed border-slate-200 bg-slate-50 px-5 text-center text-sm text-slate-500">
+        No matching market observations are loaded for this vessel class yet.
+      </div>
+    );
   }
 
   return (
-    <section className="space-y-5 pb-5">
-      <div className="relative overflow-hidden rounded-2xl bg-[linear-gradient(90deg,#fff_0%,#f6fbff_52%,#dff2fb_100%)] px-6 py-7 sm:px-8">
-        <div className="relative z-10 max-w-2xl"><p className="text-xs font-bold uppercase tracking-[0.22em] text-sky-700">Welcome to SeaNexus</p><h1 className="mt-2 text-3xl font-extrabold tracking-tight text-[#0b2b5c] sm:text-4xl">From Data to Decisions</h1><p className="mt-2 text-base text-slate-600">AI-powered insights for smarter vessel chartering to India’s East Coast.</p>
-          <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4"><div className="flex items-center gap-2 text-sm font-semibold text-slate-700"><span className="grid h-9 w-9 place-items-center rounded-full bg-sky-100 text-lg">▰</span>Lower costs</div><div className="flex items-center gap-2 text-sm font-semibold text-slate-700"><span className="grid h-9 w-9 place-items-center rounded-full bg-sky-100 text-lg">◷</span>Higher utilization</div><div className="flex items-center gap-2 text-sm font-semibold text-slate-700"><span className="grid h-9 w-9 place-items-center rounded-full bg-sky-100 text-lg">◈</span>Safer operations</div><div className="flex items-center gap-2 text-sm font-semibold text-slate-700"><span className="grid h-9 w-9 place-items-center rounded-full bg-emerald-50 text-lg text-emerald-700">◌</span>Greener tomorrow</div></div>
+    <div className="mt-3">
+      <svg
+        viewBox="0 0 320 212"
+        className="h-48 w-full"
+        aria-label="Historical market rate and CatBoost forecast"
+      >
+        {[42, 82, 122, 164].map((y) => (
+          <line key={y} x1="34" y1={y} x2="288" y2={y} stroke="#e5edf6" />
+        ))}
+        <text x="2" y="46" fill="#73849a" fontSize="10">
+          {maxValue.toFixed(1)}
+        </text>
+        <text x="2" y="168" fill="#73849a" fontSize="10">
+          {minValue.toFixed(1)}
+        </text>
+        <polyline
+          points={actualPath}
+          fill="none"
+          stroke="#0879df"
+          strokeWidth="3"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+        {forecastPath ? (
+          <polyline
+            points={forecastPath}
+            fill="none"
+            stroke="#18a871"
+            strokeWidth="3"
+            strokeDasharray="6 5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        ) : null}
+        {points.map((point, index) => (
+          <circle
+            key={point.label}
+            cx={point.x}
+            cy={point.y}
+            r={forecast?.forecast[index]?.forecast_days === activeHorizon ? 5 : 3.3}
+            fill="white"
+            stroke="#18a871"
+            strokeWidth="2.5"
+          />
+        ))}
+        <text x="34" y="190" fill="#73849a" fontSize="10">
+          Historical observations
+        </text>
+        <text x="205" y="190" fill="#73849a" fontSize="10">
+          14 / 30 / 60d
+        </text>
+      </svg>
+      <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] font-medium text-slate-500">
+        <span>
+          <i className="mr-1 inline-block h-0.5 w-4 bg-[#0879df] align-middle" />
+          Observed market rate
+        </span>
+        <span>
+          <i className="mr-1 inline-block h-0.5 w-4 border-t-2 border-dashed border-emerald-500 align-middle" />
+          CatBoost forecast
+        </span>
+      </div>
+    </div>
+  );
+}
+
+export function DashboardPage() {
+  const navigate = useNavigate();
+  const portsQuery = useMaritimePorts({ limit: 100 });
+  const vesselsQuery = useMaritimeVessels({ limit: 2000 });
+  const latestForecastQuery = useLatestMaritimeForecastRun();
+  const [horizon, setHorizon] = useState<number>(30);
+  const [selectedVesselId, setSelectedVesselId] = useState<string>();
+
+  const ports = portsQuery.data ?? [];
+  const vessels = vesselsQuery.data?.items ?? [];
+  const forecast = latestForecastQuery.data ?? null;
+  const selectedVessel = vessels.find((vessel) => vessel.id === selectedVesselId);
+  const vesselTrackQuery = useMaritimeVesselTrack(selectedVesselId);
+  const vesselClass = forecast?.vesselClass ?? 'PANAMAX';
+  const marketFrom = useMemo(() => new Date(Date.now() - 365 * 24 * 60 * 60 * 1000), []);
+  const marketQuery = useMaritimeMarketObservations({
+    cargoType: marketCargoForSeries(forecast?.cargoType ?? 'Thermal coal'),
+    vesselClass,
+    rateType: 'SPOT',
+    unit: 'USD_PER_MT',
+    from: marketFrom,
+  });
+
+  useEffect(() => {
+    if (selectedVesselId || !vessels.length) return;
+    setSelectedVesselId(
+      vessels.find((vessel) => vessel.position?.navigationStatus === 'UNDER_WAY')?.id ??
+        vessels.find((vessel) => vessel.position)?.id,
+    );
+  }, [selectedVesselId, vessels]);
+
+  const observations = marketQuery.data ?? [];
+  const latestMarket = useMemo(
+    () =>
+      [...observations].sort(
+        (left, right) => new Date(right.asOf).getTime() - new Date(left.asOf).getTime(),
+      )[0],
+    [observations],
+  );
+  const selectedForecast =
+    forecast?.forecast.find((item) => item.forecast_days === horizon) ?? forecast?.forecast[0];
+  const forecastWarnings = forecast?.warnings ?? [];
+  const underway = vessels.filter((vessel) => vessel.position?.navigationStatus === 'UNDER_WAY');
+  const reportingPorts = ports.filter((port) => Boolean(port.observation));
+  const operationalPorts = ports.filter((port) => port.operationalStatus === 'OPERATIONAL');
+  const indiaPorts = ports.filter((port) => port.country === 'India').slice(0, 6);
+  const visibleVessels = [...vessels]
+    .filter((vessel) => vessel.position)
+    .sort(
+      (left, right) =>
+        new Date(right.position!.observedAt).getTime() -
+        new Date(left.position!.observedAt).getTime(),
+    )
+    .slice(0, 5);
+  const vesselSource =
+    selectedVessel?.position?.source ?? vessels.find((vessel) => vessel.position)?.position?.source;
+  const mapIsEstimated =
+    selectedVessel?.position?.isEstimated ??
+    vessels.find((vessel) => vessel.position)?.position?.isEstimated;
+
+  return (
+    <section className="space-y-4 pb-6">
+      <header className="relative overflow-hidden rounded-2xl border border-sky-100 bg-[linear-gradient(100deg,#ffffff_0%,#f4fbff_58%,#dff3fb_100%)] px-6 py-6 shadow-sm sm:px-8">
+        <div className="relative z-10 max-w-2xl">
+          <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-sky-700">
+            SeaNexus command centre
+          </p>
+          <h1 className="mt-1.5 text-3xl font-extrabold tracking-tight text-[#0b2b5c] sm:text-4xl">
+            From data to decisions
+          </h1>
+          <p className="mt-2 text-base text-slate-600">
+            Current vessel activity, port operations and model-driven chartering decisions for
+            India’s East Coast.
+          </p>
+          <div className="mt-4 flex flex-wrap gap-3 text-xs font-semibold text-slate-600">
+            <span className="rounded-full bg-white/90 px-3 py-1.5 shadow-sm">
+              ◒ Vessel positions refresh every minute
+            </span>
+            <span className="rounded-full bg-white/90 px-3 py-1.5 shadow-sm">
+              ◉ Port and market source status is visible
+            </span>
+          </div>
         </div>
-        <div className="absolute -right-4 bottom-0 hidden h-56 w-[47%] bg-[radial-gradient(ellipse_at_72%_90%,#0369a1_0%,#0f4c81_28%,transparent_29%),linear-gradient(180deg,transparent_35%,rgba(2,132,199,.2)_36%,rgba(2,132,199,.15)_100%)] lg:block"><div className="absolute bottom-12 right-20 h-16 w-64 rounded-t-[60%] bg-[#173c63] shadow-2xl"><div className="absolute -top-14 right-14 h-16 w-20 rounded-t bg-slate-700" /><div className="absolute -top-20 right-20 h-11 w-3 bg-slate-600" /></div><p className="absolute right-12 top-7 max-w-36 text-right text-lg italic font-semibold text-white/90">“Better insights.<br />Smoother voyages.”</p></div>
+        <div className="absolute -right-4 bottom-0 hidden h-48 w-[42%] bg-[radial-gradient(ellipse_at_72%_90%,#1675a5_0%,#0e4e75_32%,transparent_33%),linear-gradient(180deg,transparent_35%,rgba(2,132,199,.2)_36%,rgba(2,132,199,.13)_100%)] lg:block">
+          <div className="absolute bottom-10 right-20 h-14 w-60 rounded-t-[60%] bg-[#173c63] shadow-2xl">
+            <div className="absolute -top-12 right-14 h-14 w-20 rounded-t bg-slate-700" />
+            <div className="absolute -top-[74px] right-20 h-9 w-3 bg-slate-600" />
+          </div>
+        </div>
+      </header>
+
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <MetricCard
+          label="Current market rate"
+          value={formatRate(latestMarket?.value)}
+          detail={
+            latestMarket
+              ? `${latestMarket.cargoType} · ${vesselClassLabel(vesselClass)}`
+              : 'No matching observation'
+          }
+          tone="sky"
+          source={
+            latestMarket ? sourceLabel(latestMarket.source, latestMarket.isEstimated) : undefined
+          }
+        />
+        <MetricCard
+          label="Tracked vessels"
+          value={vesselsQuery.isLoading ? '—' : String(vessels.length)}
+          detail={`${underway.length} currently under way`}
+          tone="blue"
+          source={vesselSource ? sourceLabel(vesselSource, mapIsEstimated) : undefined}
+        />
+        <MetricCard
+          label="Port reporting"
+          value={portsQuery.isLoading ? '—' : `${reportingPorts.length}/${ports.length}`}
+          detail={`${operationalPorts.length} operational`}
+          tone="emerald"
+          source={
+            reportingPorts[0]?.observation
+              ? sourceLabel(
+                  reportingPorts[0].observation.source,
+                  reportingPorts[0].observation.isEstimated,
+                )
+              : undefined
+          }
+        />
+        <MetricCard
+          label="Model outlook"
+          value={selectedForecast ? selectedForecast.direction : 'Awaiting run'}
+          detail={
+            selectedForecast
+              ? `${Math.abs(selectedForecast.change_percent).toFixed(1)}% over ${horizon} days`
+              : 'Use Freight Forecast to create one'
+          }
+          tone={
+            selectedForecast?.change_usd_mt && selectedForecast.change_usd_mt > 0
+              ? 'amber'
+              : 'emerald'
+          }
+          source={forecast ? sourceLabel(forecast.source.model) : 'No saved model run'}
+        />
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs font-semibold text-slate-500">CURRENT MODEL RATE</p><div className="mt-2 flex items-end justify-between"><b className="text-2xl text-[#0b2b5c]">{selectedForecast ? formatRate(selectedForecast.predicted_freight_rate_usd_mt) : formatRate(currentRate)}</b><span className="rounded-full bg-sky-50 px-2 py-1 text-xs font-semibold text-sky-700">Forecast</span></div></article>
-        <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs font-semibold text-slate-500">ACTIVE OPERATIONS</p><div className="mt-2 flex items-end justify-between"><b className="text-3xl text-[#0b2b5c]">{isLoading ? '—' : activeValue}</b><span className="text-sm font-semibold text-emerald-600">Live DB</span></div></article>
-        <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs font-semibold text-slate-500">NETWORK RECORDS</p><div className="mt-2 flex items-end justify-between"><b className="text-3xl text-[#0b2b5c]">{isLoading ? '—' : totalValue}</b><span className="text-sm font-semibold text-slate-500">{user?.role}</span></div></article>
-        <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs font-semibold text-slate-500">MARKET OUTLOOK</p><div className="mt-2 flex items-end justify-between"><b className={selectedForecast?.change_usd_mt && selectedForecast.change_usd_mt > 0 ? 'text-xl text-amber-700' : 'text-xl text-emerald-700'}>{selectedForecast ? selectedForecast.direction : 'Run forecast'}</b><span className="text-xs text-slate-500">{selectedForecast ? Math.abs(selectedForecast.change_percent) + '% change' : 'Model ready'}</span></div></article>
+      <div className="grid gap-4 xl:grid-cols-[292px_minmax(0,1fr)_280px]">
+        <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="flex items-start justify-between gap-2">
+            <div>
+              <h2 className="text-lg font-bold text-[#0b2b5c]">Forecast status</h2>
+              <p className="mt-0.5 text-xs text-slate-500">
+                Home only displays saved model output.
+              </p>
+            </div>
+            <span className="rounded-md bg-sky-50 px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-sky-700">
+              CatBoost
+            </span>
+          </div>
+          {latestForecastQuery.isLoading ? (
+            <div className="mt-6 grid h-52 place-items-center text-sm text-slate-500">
+              Loading latest forecast…
+            </div>
+          ) : forecast ? (
+            <>
+              <div className="mt-5 rounded-lg border border-sky-100 bg-sky-50 p-3">
+                <p className="text-[10px] font-bold uppercase tracking-wide text-sky-700">
+                  Latest completed run
+                </p>
+                <p className="mt-1 text-lg font-bold text-[#0b2b5c]">
+                  {forecast.cargoType} · {vesselClassLabel(forecast.vesselClass)}
+                </p>
+                <p className="mt-1 text-xs text-slate-600">
+                  Saved {formatTimestamp(forecast.createdAt)}
+                </p>
+              </div>
+              <label className="mt-4 block text-[11px] font-bold uppercase tracking-wide text-slate-500">
+                Display horizon
+                <select
+                  value={horizon}
+                  onChange={(event) => setHorizon(Number(event.target.value))}
+                  className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-sm font-medium text-slate-800"
+                >
+                  {horizonOptions.map((days) => (
+                    <option key={days} value={days}>
+                      {days} days
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <dl className="mt-4 space-y-3">
+                <RecommendationRow label="Model" value={sourceLabel(forecast.source.model)} />
+                <RecommendationRow
+                  label="Input quality"
+                  value={forecast.qualityStatus.toLowerCase()}
+                />
+              </dl>
+              <button
+                type="button"
+                onClick={() => navigate('/freight-forecast')}
+                className="mt-4 w-full rounded-lg border border-sky-200 bg-white py-2.5 text-sm font-bold text-sky-700"
+              >
+                Open forecast workspace →
+              </button>
+            </>
+          ) : (
+            <>
+              <div className="mt-5 rounded-lg border border-dashed border-sky-200 bg-sky-50 p-4 text-sm leading-6 text-slate-600">
+                No completed forecast exists yet. Forecasting is intentionally available only in the
+                Freight Forecast workspace.
+              </div>
+              <button
+                type="button"
+                onClick={() => navigate('/freight-forecast')}
+                className="mt-4 w-full rounded-lg bg-[#0879df] py-2.5 text-sm font-bold text-white shadow-sm transition hover:bg-[#0668c1]"
+              >
+                Run Freight Forecast →
+              </button>
+            </>
+          )}
+        </article>
+
+        <article className="relative min-h-[470px] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+          <div className="absolute left-4 top-4 z-10 flex max-w-[calc(100%-32px)] items-start justify-between gap-3 rounded-lg border border-slate-200 bg-white/95 px-3 py-2 shadow-sm">
+            <div>
+              <h2 className="text-sm font-bold text-[#0b2b5c]">Live vessel activity</h2>
+              <p className="mt-0.5 text-[11px] text-slate-500">
+                {vessels.length} mapped positions · {sourceLabel(vesselSource, mapIsEstimated)}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => navigate('/vessel-tracking')}
+              className="shrink-0 text-xs font-bold text-sky-700"
+            >
+              Open tracking →
+            </button>
+          </div>
+          {vesselsQuery.isLoading ? (
+            <div className="grid h-[470px] place-items-center text-sm text-slate-500">
+              Loading vessel positions…
+            </div>
+          ) : vessels.length ? (
+            <MaritimeVesselMap
+              vessels={vessels}
+              selectedVesselId={selectedVesselId}
+              selectedTrack={vesselTrackQuery.data?.points}
+              onSelect={setSelectedVesselId}
+            />
+          ) : (
+            <div className="grid h-[470px] place-items-center px-8 text-center text-sm text-slate-500">
+              No vessel positions are available. Configure an AIS provider or import vessel-position
+              data to populate this map.
+            </div>
+          )}
+          {selectedVessel ? (
+            <div className="absolute bottom-4 left-4 z-10 max-w-[calc(100%-32px)] rounded-lg border border-slate-200 bg-white/95 px-3 py-2.5 shadow-sm">
+              <div className="flex gap-3">
+                <span
+                  className={`mt-1 text-xs ${statusTone(selectedVessel.position?.navigationStatus)}`}
+                >
+                  ●
+                </span>
+                <div>
+                  <p className="text-sm font-bold text-slate-800">{selectedVessel.name}</p>
+                  <p className="mt-0.5 text-xs text-slate-600">
+                    {vesselClassLabel(selectedVessel.vesselClass)} ·{' '}
+                    {selectedVessel.position?.navigationStatus.replace('_', ' ').toLowerCase()} ·
+                    updated {formatTimestamp(selectedVessel.position?.observedAt)}
+                  </p>
+                </div>
+              </div>
+            </div>
+          ) : null}
+        </article>
+
+        <article className="rounded-xl border border-sky-100 bg-[linear-gradient(160deg,#fff_0%,#f0fbf7_100%)] p-4 shadow-sm">
+          <div className="flex items-center gap-2">
+            <span className="grid h-8 w-8 place-items-center rounded-full bg-sky-100 text-sky-700">
+              ✦
+            </span>
+            <div>
+              <h2 className="font-bold text-[#0b2b5c]">Charter recommendation</h2>
+              <p className="text-xs text-slate-500">Saved output from Freight Forecast</p>
+            </div>
+          </div>
+          {selectedForecast ? (
+            <>
+              <div className="mt-4 rounded-lg border border-emerald-100 bg-emerald-50 p-3">
+                <p className="text-sm font-bold text-emerald-800">
+                  {selectedForecast.change_usd_mt > 0
+                    ? 'Secure the charter early'
+                    : 'Review the later entry window'}
+                </p>
+                <p className="mt-1 text-xs leading-5 text-emerald-700">
+                  {selectedForecast.direction} of{' '}
+                  {Math.abs(selectedForecast.change_percent).toFixed(1)}% projected at the {horizon}
+                  -day horizon.
+                </p>
+              </div>
+              <dl className="mt-4 space-y-3 text-sm">
+                <RecommendationRow label="Vessel class" value={vesselClassLabel(vesselClass)} />
+                <RecommendationRow
+                  label="Model rate"
+                  value={formatRate(selectedForecast.predicted_freight_rate_usd_mt)}
+                />
+                <RecommendationRow
+                  label="Current rate"
+                  value={formatRate(forecast?.currentRateUsdMt)}
+                />
+                <RecommendationRow
+                  label="Market input"
+                  value={sourceLabel(forecast?.source.rate)}
+                />
+              </dl>
+              {forecastWarnings.length ? (
+                <p className="mt-4 rounded-md bg-amber-50 px-3 py-2 text-[11px] leading-4 text-amber-800">
+                  {forecastWarnings[0]}
+                </p>
+              ) : null}
+              <button
+                type="button"
+                onClick={() => navigate('/freight-forecast')}
+                className="mt-4 w-full rounded-lg border border-sky-200 bg-white py-2.5 text-sm font-bold text-sky-700"
+              >
+                View forecast details →
+              </button>
+            </>
+          ) : (
+            <div className="mt-5 rounded-lg border border-dashed border-sky-200 bg-sky-50 p-4 text-sm leading-6 text-slate-600">
+              No recommendation is shown until a model run is completed in Freight Forecast.
+            </div>
+          )}
+        </article>
       </div>
 
-      <div className="grid gap-5 xl:grid-cols-[300px_minmax(0,1fr)_280px]">
-        <form onSubmit={(event) => { event.preventDefault(); void generateRecommendation(); }} className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="text-lg font-bold text-[#0b2b5c]">Plan your next charter</h2><div className="mt-4 flex rounded-lg bg-slate-100 p-1 text-xs font-semibold"><span className="rounded-md bg-sky-600 px-3 py-2 text-white">Single voyage</span><span className="px-3 py-2 text-slate-600">Multiple voyage</span></div><label className="mt-4 block text-xs font-bold text-slate-600">CARGO TYPE<select value={cargoType} onChange={(event) => setCargoType(event.target.value)} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-800"><option>Thermal coal</option><option>Iron ore</option><option>Metallurgical coal</option></select></label><label className="mt-3 block text-xs font-bold text-slate-600">ORIGIN PORT<select value={origin} onChange={(event) => setOrigin(event.target.value)} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-800">{portOptions.map((item) => <option key={item}>{item}</option>)}</select></label><label className="mt-3 block text-xs font-bold text-slate-600">DESTINATION PORT<select value={destination} onChange={(event) => setDestination(event.target.value)} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-800">{portOptions.slice(2).map((item) => <option key={item}>{item}</option>)}</select></label><div className="mt-3 grid grid-cols-2 gap-3"><label className="text-xs font-bold text-slate-600">QUANTITY (MT)<input type="number" min="1000" step="1000" value={quantity} onChange={(event) => setQuantity(Number(event.target.value))} className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" /></label><label className="text-xs font-bold text-slate-600">CONTRACT<select value={duration} onChange={(event) => setDuration(Number(event.target.value))} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"><option value={14}>14 days</option><option value={30}>30 days</option><option value={60}>60 days</option></select></label></div><button disabled={forecastLoading} className="mt-5 w-full rounded-lg bg-sky-600 py-3 text-sm font-bold text-white hover:bg-sky-700 disabled:opacity-60">{forecastLoading ? 'Running model…' : 'Get recommendations →'}</button>{forecastError ? <p className="mt-3 text-xs text-rose-600">{forecastError}</p> : null}</form>
-
-        <article className="relative min-h-[470px] overflow-hidden rounded-xl border border-slate-200 bg-[radial-gradient(circle_at_52%_48%,#9ed4c4_0%,#347b91_38%,#155a7a_70%,#10405e_100%)] p-5 shadow-sm"><div className="relative z-10 flex items-center justify-between"><div><h2 className="text-lg font-bold text-white">Live vessel activity</h2><p className="text-xs text-sky-100">Prototype AIS route visual · replaceable provider</p></div><span className="rounded-md bg-emerald-300/90 px-2 py-1 text-xs font-bold text-emerald-950">LIVE DEMO</span></div><div className="absolute inset-0 opacity-25 [background-image:linear-gradient(rgba(255,255,255,.35)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,.35)_1px,transparent_1px)] [background-size:70px_70px]" /><p className="absolute left-[36%] top-[20%] text-xl font-bold tracking-[.2em] text-white/75">INDIA</p><p className="absolute right-[18%] top-[12%] text-lg font-bold tracking-[.16em] text-white/65">CHINA</p><p className="absolute bottom-[12%] right-[19%] text-lg font-bold tracking-[.16em] text-white/65">AUSTRALIA</p><div className="absolute left-[18%] top-[44%] h-3 w-3 rounded-full bg-emerald-300 shadow-[0_0_0_5px_rgba(167,243,208,.22)]" /><div className="absolute left-[49%] top-[35%] h-3 w-3 rounded-full bg-white shadow-[0_0_0_5px_rgba(255,255,255,.2)]" /><div className="absolute right-[20%] top-[57%] h-3 w-3 rounded-full bg-amber-300 shadow-[0_0_0_5px_rgba(253,230,138,.24)]" /><svg className="absolute inset-0 h-full w-full" viewBox="0 0 650 470" preserveAspectRatio="none"><path d="M80 275 C190 190 280 290 365 160 S510 160 570 250" fill="none" stroke="rgba(255,255,255,.72)" strokeDasharray="7 8" strokeWidth="2" /></svg><div className="absolute bottom-6 left-6 max-w-60 rounded-xl bg-white/95 p-4 shadow-lg"><div className="flex items-center justify-between"><b className="text-sm text-slate-900">MV Ocean Pride</b><span className="text-xs font-semibold text-emerald-700">● En route</span></div><p className="mt-1 text-xs text-slate-600">{recommendedVessel} · {quantity.toLocaleString()} MT</p><p className="mt-2 text-xs text-slate-700">From: {origin}<br />To: {destination}<br />ETA: prototype route estimate</p><button type="button" onClick={() => navigate('/market-intelligence')} className="mt-2 text-xs font-bold text-sky-700">Open charter analysis →</button></div></article>
-
-        <article className="rounded-xl border border-sky-100 bg-[linear-gradient(160deg,#ffffff,#f0fdf8)] p-5 shadow-sm"><div className="flex items-center gap-2"><span className="grid h-9 w-9 place-items-center rounded-full bg-sky-100 text-sky-700">✦</span><div><h2 className="font-bold text-[#0b2b5c]">AI recommendation</h2><p className="text-xs text-slate-500">From live model output</p></div></div>{selectedForecast ? <><div className="mt-6 rounded-lg border border-emerald-100 bg-emerald-50 p-3"><p className="text-sm font-bold text-emerald-800">{selectedForecast.change_usd_mt > 0 ? 'Secure charter early' : 'Review later entry window'}</p><p className="mt-1 text-xs leading-5 text-emerald-700">The model predicts a {Math.abs(selectedForecast.change_percent)}% {selectedForecast.direction.toLowerCase()} at {duration} days.</p></div><dl className="mt-5 space-y-4 text-sm"><div className="border-b border-slate-100 pb-3"><dt className="text-xs font-semibold text-slate-500">RECOMMENDED VESSEL</dt><dd className="mt-1 font-bold text-slate-900">{recommendedVessel} (best fit)</dd></div><div className="border-b border-slate-100 pb-3"><dt className="text-xs font-semibold text-slate-500">MODEL RATE</dt><dd className="mt-1 font-bold text-slate-900">{formatRate(selectedForecast.predicted_freight_rate_usd_mt)}</dd></div><div><dt className="text-xs font-semibold text-slate-500">OPTIMAL ENTRY WINDOW</dt><dd className="mt-1 font-bold text-slate-900">{duration}-day scenario</dd></div></dl><button type="button" onClick={() => navigate('/market-intelligence')} className="mt-6 w-full rounded-lg border border-sky-200 bg-white py-2.5 text-sm font-bold text-sky-700">View full analysis →</button></> : <div className="mt-8 rounded-lg border border-dashed border-sky-200 bg-sky-50 p-4 text-sm leading-6 text-slate-600">Set cargo details and select <b>Get recommendations</b>. Your XGBoost forecast will drive the rate recommendation.</div>}</article>
+      <div className="grid gap-4 xl:grid-cols-[1.05fr_.95fr_.9fr]">
+        <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="font-bold text-[#0b2b5c]">Freight rate trend</h2>
+              <p className="text-xs text-slate-500">
+                Observed market inputs and the latest model run
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => navigate('/freight-forecast')}
+              className="text-xs font-bold text-sky-700"
+            >
+              Full forecast →
+            </button>
+          </div>
+          <RateTrendChart observations={observations} forecast={forecast} activeHorizon={horizon} />
+        </article>
+        <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="font-bold text-[#0b2b5c]">Recently tracked vessels</h2>
+              <p className="text-xs text-slate-500">Latest stored positions</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => navigate('/vessel-tracking')}
+              className="text-xs font-bold text-sky-700"
+            >
+              All vessels →
+            </button>
+          </div>
+          <div className="mt-2 divide-y divide-slate-100">
+            {visibleVessels.length ? (
+              visibleVessels.map((vessel) => (
+                <button
+                  type="button"
+                  key={vessel.id}
+                  onClick={() => setSelectedVesselId(vessel.id)}
+                  className="grid w-full grid-cols-[minmax(0,1.25fr)_0.75fr_0.9fr] gap-2 py-2.5 text-left text-xs hover:bg-sky-50"
+                >
+                  <span>
+                    <b className="block truncate text-slate-800">{vessel.name}</b>
+                    <span className="text-slate-500">{vesselClassLabel(vessel.vesselClass)}</span>
+                  </span>
+                  <span className={statusTone(vessel.position?.navigationStatus)}>
+                    ● {vessel.position?.navigationStatus.replace('_', ' ').toLowerCase()}
+                  </span>
+                  <span className="text-right text-slate-500">
+                    {formatTimestamp(vessel.position?.observedAt)}
+                  </span>
+                </button>
+              ))
+            ) : (
+              <p className="py-10 text-center text-sm text-slate-500">
+                No vessel positions are stored.
+              </p>
+            )}
+          </div>
+        </article>
+        <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="font-bold text-[#0b2b5c]">Key East Coast ports</h2>
+              <p className="text-xs text-slate-500">Latest port observations</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => navigate('/ports')}
+              className="text-xs font-bold text-sky-700"
+            >
+              Port intelligence →
+            </button>
+          </div>
+          <div className="mt-2 divide-y divide-slate-100">
+            {indiaPorts.length ? (
+              indiaPorts.map((port) => (
+                <button
+                  type="button"
+                  key={port.id}
+                  onClick={() => navigate('/ports')}
+                  className="grid w-full grid-cols-[1fr_.9fr_.7fr] gap-2 py-2.5 text-left text-xs hover:bg-sky-50"
+                >
+                  <b className="text-slate-800">{port.name}</b>
+                  <span className={statusTone(port.observation?.congestionLevel)}>
+                    {port.observation
+                      ? `● ${port.observation.congestionLevel.toLowerCase()}`
+                      : '● unavailable'}
+                  </span>
+                  <span className="text-right text-slate-500">
+                    {port.observation?.averageWaitDays !== null &&
+                    port.observation?.averageWaitDays !== undefined
+                      ? `${port.observation.averageWaitDays.toFixed(1)}d wait`
+                      : 'No wait data'}
+                  </span>
+                </button>
+              ))
+            ) : (
+              <p className="py-10 text-center text-sm text-slate-500">
+                No Indian port records are stored.
+              </p>
+            )}
+          </div>
+        </article>
       </div>
 
-      <div className="grid gap-5 xl:grid-cols-[1.05fr_.95fr_.85fr]">
-        <article className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm"><div className="flex items-center justify-between"><div><h2 className="font-bold text-[#0b2b5c]">Freight rate trend</h2><p className="text-xs text-slate-500">Only model outputs are charted</p></div><button type="button" onClick={() => navigate('/market-intelligence')} className="text-xs font-bold text-sky-700">Full forecast →</button></div>{forecasts.length ? <svg viewBox="0 0 295 215" className="mt-4 h-48 w-full"><line x1="35" y1="178" x2="282" y2="178" stroke="#cbd5e1" /><line x1="35" y1="30" x2="35" y2="178" stroke="#e2e8f0" /><polygon points={'38,178 ' + chartPoints + ' 293,178'} fill="#0ea5e9" opacity=".12" /><polyline points={chartPoints} fill="none" stroke="#0284c7" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />{chartPoints.split(' ').map((point) => <circle key={point} cx={Number(point.split(',')[0])} cy={Number(point.split(',')[1])} r="4" fill="white" stroke="#0284c7" strokeWidth="3" />)}<text x="38" y="201" fill="#64748b" fontSize="11">Now</text><text x="123" y="201" fill="#64748b" fontSize="11">14d</text><text x="208" y="201" fill="#64748b" fontSize="11">30d</text><text x="278" y="201" fill="#64748b" fontSize="11">60d</text></svg> : <div className="mt-5 grid h-48 place-items-center rounded-lg bg-slate-50 text-center text-sm text-slate-500">Run a charter recommendation to visualize<br />your model’s forecast points.</div>}</article>
-        <article className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm"><div className="flex items-center justify-between"><h2 className="font-bold text-[#0b2b5c]">Recently tracked vessels</h2><span className="text-xs font-semibold text-slate-400">DEMO AIS</span></div><div className="mt-3 divide-y divide-slate-100">{demoVessels.map((vessel) => <div key={vessel[0]} className="grid grid-cols-[1.3fr_.9fr_.8fr_.55fr] gap-2 py-3 text-xs"><b className="text-slate-800">{vessel[0]}</b><span className="text-slate-500">{vessel[1]}</span><span className={vessel[4] === 'emerald' ? 'text-emerald-700' : 'text-amber-700'}>● {vessel[2]}</span><span className="text-right text-slate-500">{vessel[3]}</span></div>)}</div></article>
-        <article className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm"><div className="flex items-center justify-between"><h2 className="font-bold text-[#0b2b5c]">Key East Coast ports</h2><button type="button" onClick={() => navigate('/market-intelligence')} className="text-xs font-bold text-sky-700">View rules →</button></div><div className="mt-3 divide-y divide-slate-100">{portSnapshot.map((port) => <div key={port[0]} className="grid grid-cols-[1fr_.9fr_.7fr] gap-2 py-2 text-xs"><b className="text-slate-800">{port[0]}</b><span className={port[3] === 'emerald' ? 'text-emerald-700' : 'text-amber-700'}>● {port[1]}</span><span className="text-right text-slate-500">{port[2]}</span></div>)}</div></article>
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-xs text-slate-500 shadow-sm">
+        <span>
+          Data updates automatically while this page is open: vessel positions every minute; ports
+          every 5 minutes; market observations every 15 minutes.
+        </span>
+        <span className="font-medium text-slate-600">
+          Latest market observation: {formatTimestamp(latestMarket?.asOf)}
+        </span>
       </div>
     </section>
+  );
+}
+
+function MetricCard({
+  label,
+  value,
+  detail,
+  tone,
+  source,
+}: {
+  label: string;
+  value: string;
+  detail: string;
+  tone: 'sky' | 'blue' | 'emerald' | 'amber';
+  source?: string;
+}) {
+  const tones = {
+    sky: 'bg-sky-50 text-sky-700',
+    blue: 'bg-blue-50 text-blue-700',
+    emerald: 'bg-emerald-50 text-emerald-700',
+    amber: 'bg-amber-50 text-amber-700',
+  };
+  return (
+    <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">{label}</p>
+          <b className="mt-1 block text-xl text-[#0b2b5c]">{value}</b>
+          <p className="mt-1 text-xs text-slate-500">{detail}</p>
+        </div>
+        <span className={`grid h-9 w-9 place-items-center rounded-full text-sm ${tones[tone]}`}>
+          ◌
+        </span>
+      </div>
+      {source ? (
+        <p className="mt-2 truncate text-[10px] font-medium uppercase tracking-wide text-slate-400">
+          {source}
+        </p>
+      ) : null}
+    </article>
+  );
+}
+
+function RecommendationRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="border-b border-slate-100 pb-2.5 last:border-0">
+      <dt className="text-[10px] font-bold uppercase tracking-wide text-slate-500">{label}</dt>
+      <dd className="mt-0.5 truncate font-bold text-slate-800" title={value}>
+        {value}
+      </dd>
+    </div>
   );
 }

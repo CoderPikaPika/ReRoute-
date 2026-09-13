@@ -3,6 +3,8 @@ import { Router } from 'express';
 import {
   getMarketSeries,
   createMaritimeForecastRun,
+  getMaritimeCharterOptions,
+  getLatestMaritimeForecastRun,
   getMaritimeDashboard,
   getMaritimePort,
   getMaritimePortHistory,
@@ -11,6 +13,8 @@ import {
   getMaritimeVesselTrack,
   listMaritimePorts,
   listMaritimeVessels,
+  listMaritimeCharterPlans,
+  saveMaritimeCharterPlan,
   importMarketObservations,
 } from '../controllers/maritime.controller';
 import { requireAuth } from '../middlewares/auth.middleware';
@@ -29,5 +33,9 @@ maritimeRouter.get('/ports/:id', getMaritimePort);
 maritimeRouter.get('/ports/:id/history', getMaritimePortHistory);
 maritimeRouter.get('/ports/:id/weather', getMaritimePortWeather);
 maritimeRouter.get('/market/observations', getMarketSeries);
+maritimeRouter.get('/forecast-runs/latest', getLatestMaritimeForecastRun);
 maritimeRouter.post('/forecast-runs', createMaritimeForecastRun);
+maritimeRouter.post('/charter-options', getMaritimeCharterOptions);
+maritimeRouter.get('/charter-plans', listMaritimeCharterPlans);
+maritimeRouter.post('/charter-plans', saveMaritimeCharterPlan);
 maritimeRouter.post('/admin/market-observations/import', requireRole('ADMIN'), importMarketObservations);

@@ -1,74 +1,174 @@
-import { useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { isAxiosError } from 'axios';
+import { useNavigate } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 
-type RouteOption = {
-  id: string;
-  vessel: string;
-  type: string;
-  days: number;
-  rate: number;
-  cost: number;
-  availability: string;
-  availabilityTone: string;
-  score: number;
-};
+import { CharterRouteMap } from '../components/map/CharterRouteMap';
+import { useLatestMaritimeForecastRun, useMaritimeCharterPlans, useMaritimePortWeather, useMaritimePorts, useMaritimeVessels } from '../features/maritime/hooks';
+import { getMaritimeCharterOptions, saveMaritimeCharterPlan, type MaritimeCharterOption, type MaritimeCharterOptions, type MaritimePort, type SavedMaritimeCharterPlan, type VesselClass } from '../services/maritimeApi';
 
-const options: RouteOption[] = [
-  { id: 'ocean-pride', vessel: 'MV Ocean Pride', type: 'Panamax', days: 22, rate: 18500, cost: 407000, availability: 'Available', availabilityTone: 'text-emerald-600', score: 94 },
-  { id: 'cape-harmony', vessel: 'Cape Harmony', type: 'Capesize', days: 20, rate: 22300, cost: 446000, availability: 'Available', availabilityTone: 'text-emerald-600', score: 87 },
-  { id: 'eastern-star', vessel: 'Eastern Star', type: 'Supramax', days: 24, rate: 16800, cost: 403200, availability: 'In 5 days', availabilityTone: 'text-amber-600', score: 81 },
-  { id: 'sea-voyager', vessel: 'Sea Voyager', type: 'Handysize', days: 28, rate: 15200, cost: 425600, availability: 'Available', availabilityTone: 'text-emerald-600', score: 76 },
-];
+const cargoes = ['Thermal coal', 'Coking coal', 'Iron ore', 'Pet Coke', 'Fertilizer'];
+const vesselClasses: VesselClass[] = ['HANDYSIZE', 'SUPRAMAX', 'PANAMAX', 'CAPESIZE'];
 
-function vesselThumb() {
-  return <span className="grid h-7 w-8 place-items-center rounded bg-[linear-gradient(145deg,#cae1ec,#386782)] text-sm">⚓</span>;
+function vesselLabel(value: VesselClass): string {
+  return value === 'HANDYSIZE' ? 'Handysize' : value === 'SUPRAMAX' ? 'Supramax' : value === 'PANAMAX' ? 'Panamax' : 'Capesize';
+}
+
+function usd(value: number | undefined): string {
+  return value === undefined ? '—' : `USD ${Math.round(value).toLocaleString()}`;
+}
+
+function metric(value: number | null | undefined, suffix = ''): string {
+  return value === null || value === undefined ? 'Unavailable' : `${value.toLocaleString(undefined, { maximumFractionDigits: 1 })}${suffix}`;
+}
+
+function errorMessage(error: unknown, fallback: string): string {
+  return isAxiosError<{ error?: { message?: string } }>(error) ? error.response?.data.error?.message ?? fallback : fallback;
+}
+
+function portId(ports: MaritimePort[], name: string, fallbackCountry: string): string {
+  return ports.find((port) => port.name === name)?.id ?? ports.find((port) => port.country === fallbackCountry)?.id ?? '';
 }
 
 export function RoutePlannerPage() {
-  const [cargo, setCargo] = useState('Coal');
-  const [quantity, setQuantity] = useState(100000);
-  const [origin, setOrigin] = useState('Hay Point (AUS)');
-  const [destination, setDestination] = useState('Paradip (IND)');
-  const [vesselType, setVesselType] = useState('Panamax');
-  const [duration, setDuration] = useState('Single Voyage');
-  const [selectedId, setSelectedId] = useState(options[0].id);
-  const [activeTab, setActiveTab] = useState<'recommended' | 'alternative' | 'eco'>('recommended');
-  const [hasRun, setHasRun] = useState(false);
-  const [planName, setPlanName] = useState('');
-  const [savedPlans, setSavedPlans] = useState<string[]>([]);
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const portsQuery = useMaritimePorts({ limit: 100 });
+  const forecastQuery = useLatestMaritimeForecastRun();
+  const vesselsQuery = useMaritimeVessels({ limit: 2000 });
+  const savedQuery = useMaritimeCharterPlans();
+  const [cargoType, setCargoType] = useState('Thermal coal');
+  const [quantityMt, setQuantityMt] = useState(70_000);
+  const [originPortId, setOriginPortId] = useState('');
+  const [destinationPortId, setDestinationPortId] = useState('');
+  const [vesselClass, setVesselClass] = useState<VesselClass>('PANAMAX');
+  const [targetDate, setTargetDate] = useState(() => new Date(Date.now() + 30 * 86_400_000).toISOString().slice(0, 10));
+  const [result, setResult] = useState<MaritimeCharterOptions | null>(null);
+  const [selectedId, setSelectedId] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [showPlans, setShowPlans] = useState(false);
-  const [preferences, setPreferences] = useState({ cost: true, transit: false, eco: false });
-  const [mapMode, setMapMode] = useState<'map' | 'satellite'>('map');
-  const [mapZoom, setMapZoom] = useState(1);
+  const [notice, setNotice] = useState('');
+  const [error, setError] = useState('');
 
-  const selected = options.find((option) => option.id === selectedId) ?? options[0];
-  const visibleOptions = useMemo(() => activeTab === 'recommended' ? options : activeTab === 'alternative' ? options.slice(1, 3) : options.slice(2), [activeTab]);
-  const routeLabel = `${origin} → ${destination}`;
+  const ports = portsQuery.data ?? [];
+  const forecast = forecastQuery.data;
+  const origin = ports.find((port) => port.id === originPortId);
+  const destination = ports.find((port) => port.id === destinationPortId);
+  const originWeather = useMaritimePortWeather(originPortId || undefined);
+  const destinationWeather = useMaritimePortWeather(destinationPortId || undefined);
+  const selected = result?.options.find((option) => option.vesselId === selectedId) ?? result?.options.find((option) => option.eligible);
+  const vessel = (vesselsQuery.data?.items ?? []).find((item) => item.id === selected?.vesselId);
+  const request = useMemo(() => ({ cargoType, quantityMt, originPortId, destinationPortId, preferredVesselClass: vesselClass, targetLoadingDate: targetDate }), [cargoType, quantityMt, originPortId, destinationPortId, vesselClass, targetDate]);
 
-  function savePlan(): void {
-    const title = planName.trim() || `${origin} to ${destination} · ${new Date().toLocaleDateString()}`;
-    setSavedPlans((plans) => [title, ...plans]);
-    setPlanName('');
+  useEffect(() => {
+    if (!ports.length) return;
+    setOriginPortId((value) => value || portId(ports, 'Hay Point', 'Australia'));
+    setDestinationPortId((value) => value || portId(ports, 'Paradip', 'India'));
+  }, [ports]);
+
+  useEffect(() => {
+    if (!forecast || result) return;
+    setCargoType(forecast.cargoType);
+    setVesselClass(forecast.vesselClass);
+  }, [forecast, result]);
+
+  async function findRoutes() {
+    if (!forecast) {
+      setError('Run Freight Forecast first. Route planning uses the latest saved model output.');
+      return;
+    }
+    if (!originPortId || !destinationPortId || originPortId === destinationPortId) {
+      setError('Select two different ports.');
+      return;
+    }
+    setLoading(true);
+    setError('');
+    setNotice('');
+    try {
+      const nextResult = await getMaritimeCharterOptions(request);
+      setResult(nextResult);
+      setSelectedId(nextResult.options.find((option) => option.eligible)?.vesselId ?? nextResult.options[0]?.vesselId ?? '');
+      setNotice(`Route analysis updated at ${new Date(nextResult.generatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`);
+    } catch (reason) {
+      setError(errorMessage(reason, 'Unable to calculate route options.'));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function save(status: 'DRAFT' | 'READY_FOR_CONTRACT') {
+    if (!selected?.eligible) {
+      setError('Select an eligible vessel before saving this plan.');
+      return;
+    }
+    setSaving(true);
+    setError('');
+    try {
+      const plan = await saveMaritimeCharterPlan({ ...request, selectedVesselId: selected.vesselId, status });
+      await queryClient.invalidateQueries({ queryKey: ['maritime-charter-plans'] });
+      setNotice(status === 'DRAFT' ? `Draft plan ${plan.id.slice(-6)} saved.` : `Plan ${plan.id.slice(-6)} is ready for contract review.`);
+      setShowPlans(true);
+    } catch (reason) {
+      setError(errorMessage(reason, 'Unable to save the route plan.'));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function loadPlan(plan: SavedMaritimeCharterPlan) {
+    setCargoType(plan.cargoType);
+    setQuantityMt(plan.quantityMt);
+    setOriginPortId(plan.originPortId);
+    setDestinationPortId(plan.destinationPortId);
+    setVesselClass(plan.preferredVesselClass);
+    setTargetDate(plan.targetLoadingDate.slice(0, 10));
+    setResult(null);
+    setSelectedId(plan.selectedVesselId);
+    setShowPlans(false);
+    setNotice('Saved inputs loaded. Calculate again to refresh live data.');
   }
 
   return <section className="space-y-3 text-[#17345d]">
-    <div className="flex flex-col justify-between gap-4 xl:flex-row xl:items-end"><div><p className="text-[11px] font-bold tracking-[.25em] text-[#617a96]">ROUTE PLANNER</p><h1 className="mt-1 text-3xl font-extrabold tracking-tight text-[#12396e] sm:text-4xl">Plan the Optimal Route</h1><p className="mt-1 text-base text-[#55708e]">Find the best vessel, route and schedule for your cargo with AI-powered recommendations.</p></div><div className="flex gap-3"><button className="rounded-md border border-[#d5e4ee] bg-white px-4 py-3 text-xs font-bold text-[#24527c] shadow-sm hover:bg-[#f5fbff]" onClick={() => setShowPlans((visible) => !visible)} type="button">▣ View Saved Plans {savedPlans.length ? `(${savedPlans.length})` : ''}</button><button className="rounded-md bg-[#0873dc] px-5 py-3 text-xs font-bold text-white shadow-sm hover:bg-[#0560b7]" onClick={() => { setHasRun(false); setSelectedId(options[0].id); }} type="button">＋ New Plan</button></div></div>
-    {showPlans ? <div className="rounded-lg border border-[#cfe3f0] bg-[#f5fbff] px-4 py-3 text-sm text-[#46627f]"><b className="text-[#173d6d]">Saved plans:</b> {savedPlans.length ? savedPlans.join(' · ') : 'No saved plans yet. Save the current selection from the right panel.'}</div> : null}
+    <header className="flex flex-col justify-between gap-4 xl:flex-row xl:items-end"><div><p className="text-[11px] font-bold tracking-[.25em] text-[#617a96]">ROUTE PLANNER</p><h1 className="mt-1 text-3xl font-extrabold tracking-tight text-[#12396e] sm:text-4xl">Plan the Optimal Route</h1><p className="mt-1 text-base text-[#55708e]">Rank vessels using your forecast, port constraints, current vessel position and marine conditions.</p></div><div className="flex flex-wrap gap-3"><button className="rounded-md border border-[#d5e4ee] bg-white px-4 py-3 text-xs font-bold text-[#24527c] shadow-sm hover:bg-[#f5fbff]" onClick={() => setShowPlans((visible) => !visible)} type="button">▣ Saved Plans {savedQuery.data?.length ? `(${savedQuery.data.length})` : ''}</button><button className="rounded-md bg-[#0873dc] px-5 py-3 text-xs font-bold text-white shadow-sm hover:bg-[#0560b7]" onClick={() => { setResult(null); setSelectedId(''); setError(''); setNotice('New route plan ready.'); }} type="button">＋ New Plan</button></div></header>
 
-    <div className="grid grid-cols-4 rounded-xl border border-[#dceaf2] bg-white px-3 py-3 shadow-sm">{[['1', 'Cargo & Route', 'Define your requirements'], ['2', 'Vessel Options', 'View AI recommendations'], ['3', 'Route & Costs', 'Compare and analyze'], ['4', 'Confirm Plan', 'Save or create contract']].map(([number, label, detail], index) => <div className="relative flex items-center gap-3 px-1 sm:px-3" key={number}><span className={`grid h-9 w-9 shrink-0 place-items-center rounded-full text-sm font-extrabold ${index === 0 ? 'bg-[#104e91] text-white shadow-md' : 'bg-[#dcebf6] text-[#25537f]'}`}>{number}</span><span className="hidden lg:block"><b className="block text-xs text-[#1e426f]">{label}</b><small className="text-[10px] text-[#617b96]">{detail}</small></span>{index < 3 ? <span className="absolute -right-1 text-2xl font-light text-[#d6e2eb]">›</span> : null}</div>)}</div>
+    {notice ? <Banner tone="success">{notice}</Banner> : null}
+    {error ? <Banner tone="error">{error}</Banner> : null}
+    {!forecastQuery.isLoading && !forecast ? <Banner tone="warning"><span><b>Forecast required.</b> Run Freight Forecast before calculating a route.</span><button className="rounded-md bg-[#0873dc] px-3 py-2 text-xs font-bold text-white" onClick={() => navigate('/freight-forecast')} type="button">Open Freight Forecast →</button></Banner> : null}
+    {showPlans ? <SavedPlans plans={savedQuery.data ?? []} ports={ports} loading={savedQuery.isLoading} onLoad={loadPlan} /> : null}
+
+    <div className="grid grid-cols-4 rounded-xl border border-[#dceaf2] bg-white px-3 py-3 shadow-sm">{[['1', 'Cargo & Route', 'Define requirements'], ['2', 'Vessel Options', 'Current rankings'], ['3', 'Route & Costs', 'Analyze estimate'], ['4', 'Confirm Plan', 'Save for review']].map(([step, title, detail], index) => <div className="relative flex items-center gap-3 px-1 sm:px-3" key={step}><span className={`grid h-9 w-9 shrink-0 place-items-center rounded-full text-sm font-extrabold ${index === 0 ? 'bg-[#104e91] text-white shadow-md' : 'bg-[#dcebf6] text-[#25537f]'}`}>{step}</span><span className="hidden lg:block"><b className="block text-xs text-[#1e426f]">{title}</b><small className="text-[10px] text-[#617b96]">{detail}</small></span>{index < 3 ? <span className="absolute -right-1 text-2xl font-light text-[#d6e2eb]">›</span> : null}</div>)}</div>
 
     <div className="grid gap-3 xl:grid-cols-[270px_minmax(0,1fr)_310px]">
-      <form className="rounded-xl border border-[#dceaf2] bg-white p-3 shadow-sm" onSubmit={(event) => { event.preventDefault(); setHasRun(true); }}><h2 className="text-base font-extrabold text-[#153a70]">Cargo & Route Details</h2><Field label="Cargo Type"><select onChange={(event) => setCargo(event.target.value)} value={cargo}><option>Coal</option><option>Iron Ore</option><option>Pet Coke</option><option>Fertilizer</option></select></Field><Field label="Quantity (MT)"><input min="1000" onChange={(event) => setQuantity(Number(event.target.value))} type="number" value={quantity} /></Field><Field label="Origin Port"><select onChange={(event) => setOrigin(event.target.value)} value={origin}><option>Hay Point (AUS)</option><option>Gladstone (AUS)</option><option>Newcastle (AUS)</option><option>Richards Bay (ZA)</option></select></Field><Field label="Destination Port"><select onChange={(event) => setDestination(event.target.value)} value={destination}><option>Paradip (IND)</option><option>Vizag (IND)</option><option>Gangavaram (IND)</option><option>Dhamra (IND)</option></select></Field><Field label="Preferred Vessel Type"><select onChange={(event) => setVesselType(event.target.value)} value={vesselType}><option>Panamax</option><option>Supramax</option><option>Capesize</option><option>Handysize</option></select></Field><Field label="Target Departure Date"><input type="date" defaultValue="2026-10-15" /></Field><Field label="Contract Duration"><select onChange={(event) => setDuration(event.target.value)} value={duration}><option>Single Voyage</option><option>3 Voyage Contract</option><option>3–6 months</option></select></Field><div className="mt-4 border-t border-[#e7eff4] pt-3"><b className="text-xs text-[#126fc5]">Additional Preferences</b>{[['cost', 'Prioritize lower cost'], ['transit', 'Prioritize faster transit'], ['eco', 'Prefer eco-friendly vessels']].map(([key, label]) => <label className="mt-2 flex items-center gap-2 text-xs text-[#496582]" key={key}><input checked={preferences[key as keyof typeof preferences]} onChange={() => setPreferences((value) => ({ ...value, [key]: !value[key as keyof typeof value] }))} type="checkbox" />{label}</label>)}</div><button className="mt-4 w-full rounded-md bg-[#0873dc] py-3 text-sm font-bold text-white shadow-sm hover:bg-[#0560b7]" type="submit">{hasRun ? 'Routes Updated ✓' : 'Find Best Routes'} →</button></form>
+      <form className="rounded-xl border border-[#dceaf2] bg-white p-3 shadow-sm" onSubmit={(event) => { event.preventDefault(); void findRoutes(); }}><h2 className="text-base font-extrabold text-[#153a70]">Cargo & Route Details</h2><Field label="Cargo Type"><select onChange={(event) => setCargoType(event.target.value)} value={cargoType}>{cargoes.map((cargo) => <option key={cargo}>{cargo}</option>)}</select></Field><Field label="Quantity (MT)"><input max="1000000" min="1000" onChange={(event) => setQuantityMt(Number(event.target.value))} step="1000" type="number" value={quantityMt} /></Field><Field label="Origin Port"><select onChange={(event) => setOriginPortId(event.target.value)} value={originPortId}>{ports.map((port) => <option key={port.id} value={port.id}>{port.name} ({port.country})</option>)}</select></Field><Field label="Destination Port"><select onChange={(event) => setDestinationPortId(event.target.value)} value={destinationPortId}>{ports.map((port) => <option key={port.id} value={port.id}>{port.name} ({port.country})</option>)}</select></Field><Field label="Preferred Vessel Type"><select onChange={(event) => setVesselClass(event.target.value as VesselClass)} value={vesselClass}>{vesselClasses.map((item) => <option key={item} value={item}>{vesselLabel(item)}</option>)}</select></Field><Field label="Target Departure Date"><input min={new Date().toISOString().slice(0, 10)} onChange={(event) => setTargetDate(event.target.value)} type="date" value={targetDate} /></Field><div className="mt-4 rounded-lg bg-[#f4fbff] p-3 text-[11px] leading-5 text-[#4a6783]"><b className="text-[#1672c7]">Calculation checks</b><p className="mt-1">✓ Latest model forecast</p><p>✓ Port draft and LOA limits</p><p>✓ Vessel availability and position</p><p>✓ Latest weather at both ports</p></div><button disabled={loading || !forecast || portsQuery.isLoading} className="mt-4 w-full rounded-md bg-[#0873dc] py-3 text-sm font-bold text-white shadow-sm hover:bg-[#0560b7] disabled:cursor-not-allowed disabled:opacity-50" type="submit">{loading ? 'Finding routes…' : 'Find Best Routes →'}</button></form>
 
-      <div className="space-y-3"><article className={`relative min-h-[418px] overflow-hidden rounded-xl border border-[#bcdde9] shadow-sm ${mapMode === 'map' ? 'bg-[linear-gradient(145deg,#d7edf5,#8bc6d7_42%,#5e9ab2)]' : 'bg-[linear-gradient(145deg,#7d9a88,#a5a36e_48%,#416a78)]'}`}><div className="absolute inset-0 opacity-40" style={{ backgroundImage: 'linear-gradient(rgba(255,255,255,.3) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.3) 1px,transparent 1px)', backgroundSize: '42px 42px' }} /><div className="absolute inset-0 bg-[radial-gradient(ellipse_at_35%_30%,rgba(196,218,180,.9),transparent_22%),radial-gradient(ellipse_at_77%_75%,rgba(209,226,184,.9),transparent_28%)]" /><div className="absolute left-3 top-3 z-10 flex gap-2"><span className="rounded-md bg-white px-3 py-2 text-sm font-extrabold text-[#183d68] shadow">Optimized Route</span><button className={`rounded-md px-4 py-2 text-xs font-bold ${mapMode === 'map' ? 'bg-[#1176d5] text-white' : 'bg-white/95 text-[#315276] shadow'}`} onClick={() => setMapMode('map')} type="button">◉ Map</button><button className={`rounded-md px-4 py-2 text-xs font-bold ${mapMode === 'satellite' ? 'bg-[#1176d5] text-white' : 'bg-white/95 text-[#315276] shadow'}`} onClick={() => setMapMode('satellite')} type="button">◌ Satellite</button></div><div className="absolute right-3 top-3 z-10 rounded-lg bg-white/95 p-3 text-[11px] leading-6 text-[#49637f] shadow"><p>Total Distance <b className="float-right ml-5 text-[#183d68]">4,892 NM</b></p><p>Est. Transit Time <b className="float-right text-[#183d68]">{selected.days} days</b></p><p>Avg. Speed <b className="float-right text-[#183d68]">12.5 knots</b></p></div><svg aria-label="Optimized route placeholder" className="absolute inset-0 h-full w-full" style={{ transform: `scale(${mapZoom})`, transformOrigin: 'center' }} viewBox="0 0 700 430" preserveAspectRatio="none"><path d="M550 290 C465 278 425 275 365 236 S255 156 180 82" fill="none" stroke="#fff" strokeDasharray="10 7" strokeWidth="4" /><path d="M550 290 C465 278 425 275 365 236 S255 156 180 82" fill="none" stroke="#1d6fc2" strokeDasharray="8 8" strokeWidth="2" />{[[550,290],[445,274],[360,236],[280,166],[180,82]].map(([x,y]) => <circle cx={x} cy={y} fill="#166ec2" key={`${x}-${y}`} r="6" stroke="white" strokeWidth="3" />)}</svg><span className="absolute right-[19%] bottom-[28%] text-2xl">🚢</span><div className="absolute bottom-3 left-3 rounded-lg bg-white/95 px-3 py-2 text-[11px] text-[#46627f] shadow"><b className="block text-[#193d69]">Route-map placeholder</b>Connect a routing provider for verified coastlines, distances and weather routing.</div><div className="absolute bottom-3 right-3 flex flex-col overflow-hidden rounded-md bg-white shadow"><button aria-label="Zoom in" className="px-3 py-2 text-lg text-[#0b6fc8]" onClick={() => setMapZoom((value) => Math.min(1.35, value + 0.1))} type="button">＋</button><button aria-label="Zoom out" className="border-t border-slate-100 px-3 py-2 text-lg text-[#0b6fc8]" onClick={() => setMapZoom((value) => Math.max(0.8, value - 0.1))} type="button">−</button></div></article>
-        <article className="rounded-xl border border-[#dceaf2] bg-white p-3 shadow-sm"><div className="flex items-center justify-between"><h2 className="text-base font-extrabold text-[#153a70]">Route Options</h2><div className="flex rounded-md bg-[#f3f8fc] p-1 text-[10px] font-bold">{[['recommended', 'Recommended (3)'], ['alternative', 'Alternative Routes (2)'], ['eco', 'Eco Routes (1)']].map(([tab, label]) => <button className={`rounded px-3 py-2 ${activeTab === tab ? 'bg-[#1479d6] text-white shadow-sm' : 'text-[#5f7891]'}`} key={tab} onClick={() => setActiveTab(tab as typeof activeTab)} type="button">{label}</button>)}</div></div><div className="mt-3 overflow-x-auto"><table className="w-full min-w-[580px] text-left text-[10px]"><thead className="border-y border-[#e4edf3] text-[#6c8298]"><tr>{['#', 'Vessel Name', 'Type', 'Route', 'Est. Days', 'Est. Rate (USD/day)', 'Total Cost (USD)', 'Availability', 'Action'].map((label) => <th className="px-1.5 py-2 font-semibold" key={label}>{label}</th>)}</tr></thead><tbody>{visibleOptions.map((option, index) => <tr className={`border-b border-[#edf2f5] ${option.id === selectedId ? 'bg-[#f1f8ff]' : ''}`} key={option.id}><td className="px-1.5 py-2 text-[#53708d]">{index + 1}</td><td className="px-1.5 py-2"><span className="flex items-center gap-2 font-bold text-[#36557a]">{vesselThumb()}{option.vessel}</span></td><td className="px-1.5 py-2 text-[#48637e]">{option.type}</td><td className="px-1.5 py-2 text-[#48637e]">{routeLabel}</td><td className="px-1.5 py-2 text-[#48637e]">{option.days}</td><td className="px-1.5 py-2 text-[#48637e]">{option.rate.toLocaleString()}</td><td className="px-1.5 py-2 font-semibold text-[#48637e]">{option.cost.toLocaleString()}</td><td className={`px-1.5 py-2 font-semibold ${option.availabilityTone}`}>● {option.availability}</td><td className="px-1.5 py-2"><button className={`rounded border px-2.5 py-1 font-bold ${option.id === selectedId ? 'border-[#1479d6] bg-[#1479d6] text-white' : 'border-[#8cbde3] text-[#1372c6]'}`} onClick={() => setSelectedId(option.id)} type="button">{option.id === selectedId ? 'Selected' : 'Select'}</button></td></tr>)}</tbody></table></div></article></div>
+      <div className="min-w-0 space-y-3"><MapPanel origin={origin} destination={destination} vessel={vessel} distanceNm={result?.route.distanceNm} transitDays={selected?.estimatedTransitDays ?? result?.route.estimatedTransitDays} /><OptionsTable options={result?.options ?? []} selectedId={selected?.vesselId ?? ''} onSelect={setSelectedId} /></div>
 
-      <aside className="space-y-3"><article className="rounded-xl border border-[#dceaf2] bg-[linear-gradient(145deg,#f3fffb,#fff)] p-4 shadow-sm"><div className="flex items-center justify-between"><h2 className="text-base font-extrabold text-[#15815e]">✦ AI Recommended Option</h2><span className="rounded-full bg-[#c8f0dd] px-2 py-1 text-[10px] font-bold text-[#16805e]">Best Fit</span></div><div className="mt-4 flex gap-3">{vesselThumb()}<div><h3 className="font-extrabold text-[#183b67]">{selected.vessel}</h3><p className="mt-1 text-xs text-[#59728d]">{selected.type} | IMO 9723456</p><p className="mt-2 text-xs font-bold text-emerald-600">● {selected.availability}</p></div></div><div className="mt-4 grid grid-cols-2 border-y border-[#e2edf2] py-3"><div><p className="text-[11px] text-[#607a93]">Est. Rate</p><b className="text-lg text-[#173a69]">${selected.rate.toLocaleString()} / day</b></div><div className="border-l border-[#e2edf2] pl-4"><p className="text-[11px] text-[#607a93]">Total Voyage Cost</p><b className="text-lg text-[#173a69]">${selected.cost.toLocaleString()}</b></div></div><ul className="mt-4 space-y-2 text-xs text-[#48627e]"><li>✓ Most cost-efficient for this route</li><li>✓ Good availability</li><li>✓ Suitable for cargo and port constraints</li><li>✓ Reliable operator (low delay history)</li></ul><button className="mt-4 w-full rounded-md bg-[#104f8e] py-3 text-sm font-bold text-white shadow-sm hover:bg-[#0b437c]" onClick={() => setActiveTab('recommended')} type="button">View Details →</button></article>
-        <article className="rounded-xl border border-[#dceaf2] bg-white p-4 shadow-sm"><h2 className="text-base font-extrabold text-[#153a70]">Route Insights</h2><div className="mt-3 grid grid-cols-2 gap-y-4 text-xs">{[['☼', 'Weather Conditions', 'Favourable'], ['▣', `Port Congestion (${destination.split(' ')[0]})`, 'Low (1–2 days)'], ['◉', 'Piracy Risk', 'Low'], ['♧', 'Fuel Price Trend', 'Stable']].map(([icon, label, value]) => <div className="flex gap-2" key={label}><span className="grid h-8 w-8 place-items-center rounded-full bg-[#eef8ff] text-[#1978cb]">{icon}</span><span><small className="block text-[10px] text-[#70859a]">{label}</small><b className="mt-0.5 block text-[#365473]">{value}</b></span></div>)}</div><button className="mt-4 w-full rounded-md bg-[#eef7ff] py-2.5 text-xs font-bold text-[#1673c6]" type="button">View Detailed Analysis →</button></article>
-        <article className="rounded-xl border border-[#dceaf2] bg-white p-3 shadow-sm"><h2 className="text-base font-extrabold text-[#153a70]">Save Plan</h2><p className="mt-1 text-[11px] text-[#647c94]">Save this route plan for future reference.</p><div className="mt-3 flex gap-2"><input className="min-w-0 flex-1 rounded-md border border-[#d4e4ee] px-2.5 py-2 text-xs outline-none focus:border-[#167ad2]" onChange={(event) => setPlanName(event.target.value)} placeholder="Enter plan name..." value={planName} /><button className="rounded-md bg-[#0873dc] px-3 py-2 text-xs font-bold text-white" onClick={savePlan} type="button">Save Plan</button></div></article></aside>
+      <aside className="min-w-0 space-y-3"><Recommendation option={selected} /><Insights origin={origin} destination={destination} originWeather={originWeather.data} destinationWeather={destinationWeather.data} /><PortPanel title="Load Port" port={result?.route.origin ?? origin} /><PortPanel title="Discharge Port" port={result?.route.destination ?? destination} /><button disabled={!selected?.eligible || saving} className="w-full rounded-md bg-[#0873dc] py-3 text-sm font-bold text-white shadow-sm hover:bg-[#0560b7] disabled:cursor-not-allowed disabled:opacity-50" onClick={() => void save('DRAFT')} type="button">{saving ? 'Saving…' : 'Save Route Plan'}</button></aside>
     </div>
+
+    <div className="grid gap-3 xl:grid-cols-[1.25fr_.85fr_310px]"><RouteDetails origin={result?.route.origin ?? origin} destination={result?.route.destination ?? destination} distanceNm={result?.route.distanceNm} transitDays={selected?.estimatedTransitDays ?? result?.route.estimatedTransitDays} date={targetDate} /><CostPanel option={selected} /><article className="rounded-xl border border-emerald-100 bg-[linear-gradient(145deg,#effff7,#fff)] p-4 shadow-sm"><b className="text-[#157351]">Ready to proceed?</b><p className="mt-2 text-xs leading-5 text-[#527468]">The route plan retains the selected vessel and its forecast-supported cost estimate.</p><button disabled={!selected?.eligible || saving} className="mt-4 w-full rounded-md bg-[#129d6d] py-3 text-sm font-bold text-white shadow-sm hover:bg-[#0d895c] disabled:cursor-not-allowed disabled:opacity-50" onClick={() => void save('READY_FOR_CONTRACT')} type="button">{saving ? 'Saving…' : 'Proceed to Contract →'}</button></article></div>
   </section>;
 }
 
-function Field({ label, children }: { label: string; children: ReactNode }) {
-  return <label className="mt-3 block text-[11px] font-semibold text-[#58728d]">{label}<span className="mt-1 block [&_input]:w-full [&_input]:rounded-md [&_input]:border [&_input]:border-[#dbe8f0] [&_input]:bg-[#f8fbfd] [&_input]:px-3 [&_input]:py-2 [&_input]:text-xs [&_input]:font-semibold [&_input]:text-[#1e416a] [&_select]:w-full [&_select]:rounded-md [&_select]:border [&_select]:border-[#dbe8f0] [&_select]:bg-[#f8fbfd] [&_select]:px-3 [&_select]:py-2 [&_select]:text-xs [&_select]:font-semibold [&_select]:text-[#1e416a]">{children}</span></label>;
-}
+function Banner({ tone, children }: { tone: 'success' | 'warning' | 'error'; children: ReactNode }) { const colour = tone === 'success' ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : tone === 'warning' ? 'border-amber-200 bg-amber-50 text-amber-900' : 'border-rose-200 bg-rose-50 text-rose-800'; return <div className={`flex flex-wrap items-center justify-between gap-3 rounded-lg border px-4 py-3 text-sm ${colour}`}>{children}</div>; }
+
+function MapPanel({ origin, destination, vessel, distanceNm, transitDays }: { origin?: MaritimePort; destination?: MaritimePort; vessel?: { name: string; position: { longitude: number; latitude: number; isEstimated: boolean } | null }; distanceNm?: number; transitDays?: number }) { const vesselPoint = vessel?.position ? { name: vessel.name, longitude: vessel.position.longitude, latitude: vessel.position.latitude, isEstimated: vessel.position.isEstimated } : undefined; return <article className="relative h-[418px] overflow-hidden rounded-xl border border-[#bddde9] bg-sky-100 shadow-sm"><CharterRouteMap origin={origin} destination={destination} vessel={vesselPoint} /><div className="pointer-events-none absolute left-3 top-3 z-10 rounded-lg border border-white/80 bg-white/95 px-3 py-2 shadow"><h2 className="text-sm font-extrabold text-[#153a70]">Optimized Route</h2><p className="mt-0.5 text-[10px] text-[#5d7891]">Map tiles: OpenStreetMap · sea corridor estimate</p></div><div className="pointer-events-none absolute right-3 top-3 z-10 rounded-lg bg-white/95 p-3 text-[11px] leading-6 text-[#49637f] shadow"><p>Distance <b className="float-right ml-5 text-[#183d68]">{distanceNm ? `${distanceNm.toLocaleString()} NM` : 'Calculate route'}</b></p><p>Transit <b className="float-right text-[#183d68]">{transitDays ? `${transitDays} days` : '—'}</b></p><p>Vessel marker <b className="float-right text-[#183d68]">{vesselPoint ? (vesselPoint.isEstimated ? 'Estimated' : 'AIS') : 'Not selected'}</b></p></div></article>; }
+
+function OptionsTable({ options, selectedId, onSelect }: { options: MaritimeCharterOption[]; selectedId: string; onSelect: (id: string) => void }) { return <article className="rounded-xl border border-[#dceaf2] bg-white p-3 shadow-sm"><div className="flex justify-between gap-3"><div><h2 className="text-base font-extrabold text-[#153a70]">Route Options</h2><p className="text-[10px] text-[#617b96]">Ranked by capacity, port limits, availability and latest rate.</p></div><span className="text-xs font-bold text-[#0f75cb]">{options.filter((option) => option.eligible).length} eligible</span></div><div className="mt-3 overflow-x-auto"><table className="w-full min-w-[620px] text-left text-[10px]"><thead className="border-y border-[#e4edf3] text-[#6c8298]"><tr>{['#', 'Vessel', 'Type', 'DWT', 'Days', 'Rate / day', 'Cost', 'Availability', 'Action'].map((label) => <th className="px-1.5 py-2 font-semibold" key={label}>{label}</th>)}</tr></thead><tbody>{options.length ? options.map((option, index) => <tr className={`border-b border-[#edf2f5] ${selectedId === option.vesselId ? 'bg-[#f1f8ff]' : ''}`} key={option.vesselId}><td className="px-1.5 py-2 text-[#53708d]">{index + 1}</td><td className="px-1.5 py-2 font-bold text-[#36557a]">⚓ {option.vesselName}</td><td className="px-1.5 py-2 text-[#48637e]">{vesselLabel(option.vesselClass)}</td><td className="px-1.5 py-2 text-[#48637e]">{option.deadweightTonnes.toLocaleString()}</td><td className="px-1.5 py-2 text-[#48637e]">{option.estimatedTransitDays}</td><td className="px-1.5 py-2 text-[#48637e]">{usd(option.estimatedDailyRateUsd)}</td><td className="px-1.5 py-2 font-semibold text-[#48637e]">{usd(option.estimatedCharterCostUsd)}</td><td className={`px-1.5 py-2 font-semibold ${option.eligible ? 'text-emerald-600' : 'text-rose-600'}`}>● {option.eligible ? (option.availabilityDays ? `${option.availabilityDays} days` : 'Available') : 'Ineligible'}</td><td className="px-1.5 py-2"><button disabled={!option.eligible} className={`rounded border px-2.5 py-1 font-bold disabled:opacity-40 ${selectedId === option.vesselId ? 'border-[#1479d6] bg-[#1479d6] text-white' : 'border-[#8cbde3] text-[#1372c6]'}`} onClick={() => onSelect(option.vesselId)} type="button">{selectedId === option.vesselId ? 'Selected' : 'Select'}</button></td></tr>) : <tr><td className="px-2 py-8 text-center text-sm text-slate-500" colSpan={9}>Run Find Best Routes to retrieve data-backed vessel options.</td></tr>}</tbody></table></div></article>; }
+
+function Recommendation({ option }: { option?: MaritimeCharterOption }) { return <article className="rounded-xl border border-[#ccecdf] bg-[linear-gradient(145deg,#f2fff9,#fff)] p-4 shadow-sm"><h2 className="text-base font-extrabold text-[#15815e]">✦ AI Recommended Option</h2>{option ? <><div className="mt-4 flex gap-3"><span className="grid h-12 w-14 place-items-center rounded-lg bg-[linear-gradient(145deg,#c9e1ed,#386a85)] text-xl">⚓</span><div><h3 className="font-extrabold text-[#183b67]">{option.vesselName}</h3><p className="mt-1 text-xs text-[#59728d]">{vesselLabel(option.vesselClass)} · {option.deadweightTonnes.toLocaleString()} DWT</p><p className={`mt-2 text-xs font-bold ${option.eligible ? 'text-emerald-600' : 'text-rose-600'}`}>● {option.eligible ? 'Eligible for route' : 'Not eligible'}</p></div></div><div className="mt-4 grid grid-cols-2 border-y border-[#e2edf2] py-3 text-xs"><div><small className="block text-[#607a93]">Rate / day</small><b className="text-base text-[#173a69]">{usd(option.estimatedDailyRateUsd)}</b></div><div className="border-l border-[#e2edf2] pl-3"><small className="block text-[#607a93]">Total cost</small><b className="text-base text-[#173a69]">{usd(option.estimatedCharterCostUsd)}</b></div></div><ul className="mt-3 space-y-1.5 text-xs text-[#48627e]">{option.reasons.slice(0, 4).map((reason) => <li key={reason}>✓ {reason}</li>)}</ul></> : <p className="mt-3 rounded-lg border border-dashed border-[#b8dfcf] bg-white/80 p-3 text-xs leading-5 text-[#527468]">Calculate routes to retrieve the best current fit.</p>}</article>; }
+
+function Insights({ origin, destination, originWeather, destinationWeather }: { origin?: MaritimePort; destination?: MaritimePort; originWeather?: { waveHeightMeters: number | null; source: string; qualityStatus: string }; destinationWeather?: { waveHeightMeters: number | null; source: string; qualityStatus: string } }) { const source = originWeather?.source ?? destinationWeather?.source; return <article className="rounded-xl border border-[#dceaf2] bg-white p-4 shadow-sm"><h2 className="text-base font-extrabold text-[#153a70]">Route Insights</h2><div className="mt-3 grid grid-cols-2 gap-y-4 text-xs"><Insight label={`${origin?.name ?? 'Origin'} wave`} value={metric(originWeather?.waveHeightMeters, ' m')} /><Insight label={`${destination?.name ?? 'Destination'} wave`} value={metric(destinationWeather?.waveHeightMeters, ' m')} /><Insight label="Port congestion" value={destination?.observation?.congestionLevel ?? 'Unavailable'} /><Insight label="Destination wait" value={metric(destination?.observation?.averageWaitDays, ' days')} /></div><p className="mt-4 border-t border-[#e8f0f4] pt-3 text-[10px] text-[#667f96]">{source ? `Marine data source: ${source}.` : 'Weather provider response pending.'}</p></article>; }
+
+function Insight({ label, value }: { label: string; value: string }) { return <div><small className="block text-[10px] text-[#70859a]">{label}</small><b className="mt-0.5 block text-[#365473]">{value}</b></div>; }
+
+function PortPanel({ title, port }: { title: string; port?: { name: string; country: string; maxDraftMeters?: number | null; maxLoaMeters?: number | null; averageWaitDays?: number | null; congestionLevel?: string; handlingCapabilities?: string[] } }) { return <article className="rounded-xl border border-[#dceaf2] bg-white p-3 shadow-sm"><p className="text-[10px] font-bold uppercase tracking-wide text-[#1479d6]">{title}</p><b className="mt-1 block text-sm text-[#24496f]">{port ? `${port.name} (${port.country})` : 'Select a port'}</b><dl className="mt-2 space-y-1 text-[10px] text-[#58708b]"><div className="flex justify-between gap-3"><dt>Max Draft</dt><dd>{metric(port?.maxDraftMeters, ' m')}</dd></div><div className="flex justify-between gap-3"><dt>Max LOA</dt><dd>{metric(port?.maxLoaMeters, ' m')}</dd></div><div className="flex justify-between gap-3"><dt>Avg. Wait</dt><dd>{metric(port?.averageWaitDays, ' days')}</dd></div><div className="flex justify-between gap-3"><dt>Congestion</dt><dd>{port?.congestionLevel?.toLowerCase() ?? 'Unavailable'}</dd></div></dl></article>; }
+
+function RouteDetails({ origin, destination, distanceNm, transitDays, date }: { origin?: { name: string }; destination?: { name: string }; distanceNm?: number; transitDays?: number; date: string }) { const etd = date ? new Date(`${date}T00:00:00`) : undefined; const eta = etd && transitDays ? new Date(etd.getTime() + transitDays * 86_400_000) : undefined; return <article className="rounded-xl border border-[#dceaf2] bg-white p-4 shadow-sm"><h2 className="text-base font-extrabold text-[#153a70]">Route Details</h2><div className="mt-4 grid grid-cols-[24px_1fr_1fr] gap-y-4 text-xs"><span className="text-emerald-500">●</span><div><b className="text-[#284b70]">{origin?.name ?? 'Origin'}</b><small className="mt-1 block text-slate-500">Load port</small></div><div><small className="text-slate-500">ETD</small><b className="block text-[#284b70]">{etd?.toLocaleDateString() ?? '—'}</b></div><span className="text-[#1478d1]">⚓</span><div><b className="text-[#284b70]">Sea route</b><small className="mt-1 block text-slate-500">{distanceNm ? `${distanceNm.toLocaleString()} NM` : 'Calculate route'}</small></div><div><small className="text-slate-500">Transit</small><b className="block text-[#284b70]">{transitDays ? `${transitDays} days` : '—'}</b></div><span className="text-rose-500">●</span><div><b className="text-[#284b70]">{destination?.name ?? 'Destination'}</b><small className="mt-1 block text-slate-500">Discharge port</small></div><div><small className="text-slate-500">ETA</small><b className="block text-[#284b70]">{eta?.toLocaleDateString() ?? '—'}</b></div></div></article>; }
+
+function CostPanel({ option }: { option?: MaritimeCharterOption }) { return <article className="rounded-xl border border-[#dceaf2] bg-white p-4 shadow-sm"><h2 className="text-base font-extrabold text-[#153a70]">Route Cost Estimate</h2>{option ? <dl className="mt-3 divide-y divide-[#e7eff4] text-xs">{[['Daily charter rate', `${usd(option.estimatedDailyRateUsd)} / day`], ['Estimated voyage days', `${option.estimatedTransitDays} days`], ['Market rate source', option.marketRateSource], ['Data quality', option.isEstimated ? 'Estimated / seeded' : 'Provider data']].map(([label, value]) => <div className="flex justify-between gap-3 py-2" key={label}><dt className="text-[#5f7891]">{label}</dt><dd className="text-right font-semibold text-[#24486f]">{value}</dd></div>)}<div className="flex justify-between bg-[#edf7ff] px-2 py-3 text-sm"><dt className="font-extrabold text-[#173e6b]">Total Charter Estimate</dt><dd className="font-extrabold text-[#173e6b]">{usd(option.estimatedCharterCostUsd)}</dd></div></dl> : <p className="mt-4 text-sm text-slate-500">Run route analysis to calculate cost.</p>}</article>; }
+
+function SavedPlans({ plans, ports, loading, onLoad }: { plans: SavedMaritimeCharterPlan[]; ports: MaritimePort[]; loading: boolean; onLoad: (plan: SavedMaritimeCharterPlan) => void }) { const label = (id: string) => ports.find((port) => port.id === id)?.name ?? 'Unknown port'; return <article className="rounded-xl border border-[#cfe3f0] bg-[#f5fbff] p-3 shadow-sm"><h2 className="text-sm font-extrabold text-[#173d6d]">Saved Route Plans</h2>{loading ? <p className="mt-3 text-sm text-[#526d86]">Loading saved plans…</p> : plans.length ? <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-3">{plans.map((plan) => <div className="rounded-lg border border-[#d9e7f0] bg-white p-3" key={plan.id}><b className="text-xs text-[#24496f]">{label(plan.originPortId)} → {label(plan.destinationPortId)}</b><p className="mt-1 text-[10px] text-[#5c7690]">{plan.cargoType} · {plan.quantityMt.toLocaleString()} MT · {usd(plan.estimatedCharterCostUsd)}</p><button className="mt-2 text-xs font-bold text-[#0d72c9]" onClick={() => onLoad(plan)} type="button">Load inputs →</button></div>)}</div> : <p className="mt-3 text-sm text-[#526d86]">No saved plans yet.</p>}</article>; }
+
+function Field({ label, children }: { label: string; children: ReactNode }) { return <label className="mt-3 block text-[11px] font-semibold text-[#58728d]">{label}<span className="mt-1 block [&_input]:w-full [&_input]:rounded-md [&_input]:border [&_input]:border-[#dbe8f0] [&_input]:bg-[#f8fbfd] [&_input]:px-3 [&_input]:py-2 [&_input]:text-xs [&_input]:font-semibold [&_input]:text-[#1e416a] [&_select]:w-full [&_select]:rounded-md [&_select]:border [&_select]:border-[#dbe8f0] [&_select]:bg-[#f8fbfd] [&_select]:px-3 [&_select]:py-2 [&_select]:text-xs [&_select]:font-semibold [&_select]:text-[#1e416a]">{children}</span></label>; }

@@ -6,6 +6,8 @@ import { AppError } from '../errors/app-error';
 import { maritimeIntelligenceService } from '../services/maritime/maritime-intelligence.service';
 import { maritimeForecastService } from '../services/maritime/maritime-forecast.service';
 import { marineWeatherService } from '../services/maritime/marine-weather.service';
+import { charterPlanningService } from '../services/maritime/charter-planning.service';
+import { CHARTER_PLAN_STATUSES } from '../models/charter-plan.model';
 import { VESSEL_CLASSES, VESSEL_NAVIGATION_STATUSES } from '../types/maritime';
 import type { AuthenticatedRequest } from '../types/auth';
 
@@ -66,6 +68,25 @@ const forecastRunSchema = z.object({
   vesselClass: z.enum(VESSEL_CLASSES),
   originPortId: z.string().regex(/^[a-f\d]{24}$/i).optional(),
   destinationPortId: z.string().regex(/^[a-f\d]{24}$/i).optional(),
+  cargoQuantityMt: z.number().positive().max(1_000_000).optional(),
+});
+
+const charterInputSchema = z.object({
+  cargoType: z.string().trim().min(1).max(100),
+  quantityMt: z.coerce.number().positive().max(1_000_000),
+  originPortId: z.string().regex(/^[a-f\d]{24}$/i),
+  destinationPortId: z.string().regex(/^[a-f\d]{24}$/i),
+  preferredVesselClass: z.enum(VESSEL_CLASSES),
+  targetLoadingDate: z.coerce.date(),
+});
+
+const saveCharterPlanSchema = charterInputSchema.extend({
+  selectedVesselId: z.string().regex(/^[a-f\d]{24}$/i),
+  status: z.enum(CHARTER_PLAN_STATUSES),
+});
+
+const charterPlanListQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(20),
 });
 
 function parseOrThrow<T>(schema: z.ZodType<T>, value: unknown): T {
@@ -183,4 +204,33 @@ export async function createMaritimeForecastRun(request: AuthenticatedRequest, r
   }
   const data = await maritimeForecastService.createRun({ requestedBy: request.user.id, ...parsed.data });
   response.status(201).json({ success: true, data, message: 'Maritime forecast run generated successfully.' });
+}
+
+export async function getLatestMaritimeForecastRun(request: AuthenticatedRequest, response: Response): Promise<void> {
+  if (!request.user) throw new AppError(401, 'UNAUTHENTICATED', 'Authentication is required.');
+  const data = await maritimeForecastService.getLatestRun(request.user.id);
+  response.status(200).json({ success: true, data, message: data ? 'Latest maritime forecast run retrieved successfully.' : 'No maritime forecast run exists yet.' });
+}
+
+export async function getMaritimeCharterOptions(request: AuthenticatedRequest, response: Response): Promise<void> {
+  if (!request.user) throw new AppError(401, 'UNAUTHENTICATED', 'Authentication is required.');
+  const parsed = charterInputSchema.safeParse(request.body);
+  if (!parsed.success) throw new AppError(400, 'VALIDATION_ERROR', 'Enter valid charter planning inputs.', parsed.error.flatten());
+  const data = await charterPlanningService.getOptions({ requestedBy: request.user.id, ...parsed.data });
+  response.status(200).json({ success: true, data, message: 'Charter options generated successfully.' });
+}
+
+export async function saveMaritimeCharterPlan(request: AuthenticatedRequest, response: Response): Promise<void> {
+  if (!request.user) throw new AppError(401, 'UNAUTHENTICATED', 'Authentication is required.');
+  const parsed = saveCharterPlanSchema.safeParse(request.body);
+  if (!parsed.success) throw new AppError(400, 'VALIDATION_ERROR', 'Enter a valid charter plan.', parsed.error.flatten());
+  const data = await charterPlanningService.savePlan({ requestedBy: request.user.id, ...parsed.data });
+  response.status(201).json({ success: true, data, message: parsed.data.status === 'DRAFT' ? 'Charter plan saved as draft.' : 'Charter plan is ready for contract creation.' });
+}
+
+export async function listMaritimeCharterPlans(request: AuthenticatedRequest, response: Response): Promise<void> {
+  if (!request.user) throw new AppError(401, 'UNAUTHENTICATED', 'Authentication is required.');
+  const query = parseOrThrow(charterPlanListQuery, request.query);
+  const data = await charterPlanningService.listPlans(request.user.id, query.limit);
+  response.status(200).json({ success: true, data, message: 'Saved charter plans retrieved successfully.' });
 }

@@ -6,6 +6,7 @@ import { MarketObservationModel, type MarketObservationDocument } from '../model
 import { PortObservationModel, type PortObservationDocument } from '../models/port-observation.model';
 import { MaritimeVesselModel, type MaritimeVesselDocument } from '../models/vessel.model';
 import { VesselPositionModel, type VesselPosition, type VesselPositionDocument } from '../models/vessel-position.model';
+import { ForecastRunModel, type ForecastRunDocument } from '../models/forecast-run.model';
 import type { MarketRateType, VesselClass } from '../types/maritime';
 
 export class MaritimeRepository {
@@ -122,6 +123,10 @@ export class MaritimeRepository {
 
   public insertMarketObservations(records: Array<Omit<import('../models/market-observation.model').MarketObservation, 'ingestedAt'>>): Promise<MarketObservationDocument[]> {
     return MarketObservationModel.insertMany(records);
+  }
+
+  public findLatestForecastRun(requestedBy: string): Promise<ForecastRunDocument | null> {
+    return ForecastRunModel.findOne({ requestedBy }).sort({ createdAt: -1 }).exec();
   }
 }
 
