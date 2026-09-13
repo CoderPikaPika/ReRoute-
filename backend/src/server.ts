@@ -4,12 +4,14 @@ import { app } from './app';
 import { connectDatabase, disconnectDatabase } from './config/database';
 import { env } from './config/env';
 import { logger } from './config/logger';
+import { aisStreamService } from './services/maritime/ais-stream.service';
 
 let server: Server | undefined;
 let shuttingDown = false;
 
 async function startServer(): Promise<void> {
   await connectDatabase();
+  aisStreamService.start();
 
   server = app.listen(env.PORT, () => {
     logger.info({ port: env.PORT, environment: env.NODE_ENV }, 'API server listening');
@@ -40,6 +42,7 @@ async function shutdown(signal: string): Promise<void> {
     });
   });
 
+  aisStreamService.stop();
   await disconnectDatabase();
   logger.info('Graceful shutdown completed');
 }

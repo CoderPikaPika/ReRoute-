@@ -12,6 +12,10 @@ const environmentSchema = z.object({
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
   MAP_API_KEY: z.string().optional(),
   ML_SERVICE_URL: z.url().default('http://127.0.0.1:8000'),
+  OPEN_METEO_MARINE_URL: z.url().default('https://marine-api.open-meteo.com/v1/marine'),
+  AISSTREAM_API_KEY: z.string().min(1).optional(),
+  AISSTREAM_BOUNDING_BOXES: z.string().min(1).optional(),
+  AISSTREAM_MMSI_FILTER: z.string().optional(),
 });
 
 const parsedEnvironment = environmentSchema.safeParse(process.env);

@@ -8,6 +8,21 @@ export interface ForecastRequest {
   daysSinceStart: number;
 }
 
+export interface ForecastResult {
+  forecast_days: number;
+  predicted_freight_rate_usd_mt: number;
+  current_freight_rate_usd_mt: number;
+  change_usd_mt: number;
+  change_percent: number;
+  direction: 'Increase' | 'Decrease' | 'Stable';
+}
+
+export interface ForecastResponse {
+  forecasts: ForecastResult[];
+  data_source: string;
+  disclaimer?: string;
+}
+
 export class ForecastService {
   public async status() {
     try {
@@ -21,7 +36,7 @@ export class ForecastService {
     }
   }
 
-  public async predict(input: ForecastRequest) {
+  public async predict(input: ForecastRequest): Promise<ForecastResponse> {
     let response: Response;
     try {
       response = await fetch(env.ML_SERVICE_URL + '/predict', {
@@ -43,7 +58,7 @@ export class ForecastService {
     if (!response.ok) {
       throw new AppError(502, 'ML_SERVICE_ERROR', 'The freight forecasting service rejected this prediction request.');
     }
-    return response.json();
+    return response.json() as Promise<ForecastResponse>;
   }
 
   public async importHistoricalData(records: unknown[]) {

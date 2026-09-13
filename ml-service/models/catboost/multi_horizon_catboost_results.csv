@@ -1,0 +1,4 @@
+Forecast_Horizon,Target,MAE_USD_MT,RMSE_USD_MT,R2,Trees_Used
+14-Day,freight_rate_14d_usd_mt,2.229,2.824,0.9461,273
+30-Day,freight_rate_30d_usd_mt,3.418,4.251,0.9042,376
+60-Day,freight_rate_60d_usd_mt,4.667,5.87,0.8568,519
