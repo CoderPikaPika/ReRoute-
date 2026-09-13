@@ -9,11 +9,8 @@ const navigationItems = [
   { label: 'Freight Forecast', icon: '▥', to: '/freight-forecast' },
   { label: 'Ports', icon: '⚓', to: '/ports' },
   { label: 'Route Planner', icon: '⚓', to: '/route-planner' },
-  { label: 'Contracts', icon: '▤', to: '/shipments' },
+  { label: 'Contracts', icon: '▤', to: '/contracts' },
   { label: 'Market Intelligence', icon: '▧', to: '/market-intelligence' },
-  { label: 'Risk & Alerts', icon: '♧', to: '/market-intelligence' },
-  { label: 'Reports', icon: '▱', to: '/market-intelligence' },
-  { label: 'Settings', icon: '⚙', to: '/market-intelligence' },
 ];
 
 export function AppShell() {
@@ -31,7 +28,7 @@ export function AppShell() {
         <div className="flex h-full flex-col px-4 py-5">
           <NavLink className="flex items-center gap-2 px-3 text-xl font-extrabold tracking-tight text-[#103b76]" to="/dashboard">
             <span className="grid h-8 w-8 place-items-center rounded-lg bg-sky-100 text-sky-600">〰</span>
-            Sea<span className="text-[#1689df]">Nexus</span>
+            <span className="whitespace-nowrap">Sea<span className="text-[#1689df]">Nexus</span></span>
           </NavLink>
           <p className="mt-1 px-3 text-xs text-slate-500">Plan smarter. Sail further.</p>
           <nav aria-label="Primary navigation" className="mt-8 flex gap-1 overflow-x-auto pb-1 lg:flex-col lg:overflow-visible">

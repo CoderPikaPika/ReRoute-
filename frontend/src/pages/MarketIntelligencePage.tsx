@@ -1,553 +1,140 @@
-import { useEffect, useState } from 'react';
+import { useState, type ReactNode } from 'react';
 
-import { getFreightForecast, getModelStatus, type FreightForecast } from '../services/marketApi';
-
-const ports = {
-  Paradip: {
-    maxClass: 4,
-    draft: '18.0m',
-    note: 'Capesize calls can be conditional on berth and tide planning.',
-  },
-  Visakhapatnam: {
-    maxClass: 3,
-    draft: '16.5m',
-    note: 'Suitable for Panamax and below under the reference constraint set.',
-  },
-  Dhamra: {
-    maxClass: 4,
-    draft: '18.0m',
-    note: 'Deep-water bulk terminal; large vessel calls are generally feasible.',
-  },
-  Haldia: { maxClass: 1, draft: '8.5m', note: 'Draft constraint: limit planning to Handysize.' },
-  Gangavaram: {
-    maxClass: 4,
-    draft: '21.0m',
-    note: 'Deep-water port suitable for large bulk vessels.',
-  },
+type Region = {
+  id: string;
+  flag: string;
+  name: string;
+  description: string;
+  exports: string;
+  ports: string;
+  freightRate: string;
+  commodities: string;
 };
-type PortName = keyof typeof ports;
 
-const vesselClasses = [
-  { name: 'Handysize', capacity: 38000, rank: 1, draft: '10.4m' },
-  { name: 'Supramax', capacity: 58000, rank: 2, draft: '12.2m' },
-  { name: 'Panamax', capacity: 75000, rank: 3, draft: '13.8m' },
-  { name: 'Capesize', capacity: 180000, rank: 4, draft: '17.5m' },
+const regions: Region[] = [
+  { id: 'australia', flag: '🇦🇺', name: 'Australia', description: 'Key Coal Supplier', exports: '412 Mt', ports: 'Newcastle, Hay Point, Gladstone, Abbot Point', freightRate: '$18,400 / day', commodities: 'Thermal Coal, Metallurgical Coal, LNG' },
+  { id: 'us', flag: '🇺🇸', name: 'US', description: 'Growing Demand', exports: '218 Mt', ports: 'New Orleans, Baltimore, Norfolk', freightRate: '$19,100 / day', commodities: 'Coal, Grain, Pet Coke' },
+  { id: 'mozambique', flag: '🇲🇿', name: 'Mozambique', description: 'Emerging Supplier', exports: '56 Mt', ports: 'Maputo, Beira, Nacala', freightRate: '$17,600 / day', commodities: 'Metallurgical Coal, LNG' },
+  { id: 'russia', flag: '🇷🇺', name: 'Russia', description: 'Competitive Supply', exports: '334 Mt', ports: 'Vostochny, Nakhodka, Murmansk', freightRate: '$16,900 / day', commodities: 'Thermal Coal, Fertilizer' },
+  { id: 'indonesia', flag: '🇮🇩', name: 'Indonesia', description: 'Thermal Coal & Nickel', exports: '508 Mt', ports: 'Samarinda, Balikpapan, Tarahan', freightRate: '$17,200 / day', commodities: 'Thermal Coal, Nickel' },
 ];
 
-interface SavedScenario {
-  id: string;
-  savedAt: string;
-  origin: PortName;
-  destination: PortName;
-  cargoVolume: number;
-  currentRate: number;
-  bunkerRate: number;
-  forecasts: FreightForecast[];
-}
+const developments = [
+  ['bg-emerald-500', 'Australia increases coal export guidance for 2026', '12 Sep 2026'],
+  ['bg-rose-500', 'Labor action risk at Newcastle port', '10 Sep 2026'],
+  ['bg-emerald-500', 'Strong Indian demand expected in Q4', '08 Sep 2026'],
+  ['bg-amber-400', 'Cyclone season watch (Eastern Australia)', '06 Sep 2026'],
+  ['bg-blue-500', 'New environmental regulations under review', '03 Sep 2026'],
+];
 
-const scenarioStorageKey = 'seanexus.market-scenarios';
-
-function dateToDayOfYear(date: string) {
-  const value = new Date(date + 'T00:00:00');
-  const beginning = new Date(value.getFullYear(), 0, 0);
-  return Math.max(1, Math.floor((value.getTime() - beginning.getTime()) / 86400000));
-}
-
-function formatCurrency(value: number) {
-  return 'USD ' + value.toFixed(2) + '/MT';
-}
+const drivers = [
+  ['⌂', 'Chinese demand', 'High', 'text-emerald-600'],
+  ['♜', 'Indian coal imports', 'High', 'text-emerald-600'],
+  ['▥', 'Australian production', 'Stable', 'text-[#46627f]'],
+  ['♧', 'Freight rate volatility', 'Moderate', 'text-amber-600'],
+  ['☼', 'Weather disruptions', 'Low', 'text-[#46627f]'],
+];
 
 export function MarketIntelligencePage() {
-  const [origin, setOrigin] = useState<PortName>('Paradip');
-  const [destination, setDestination] = useState<PortName>('Visakhapatnam');
-  const [cargoVolume, setCargoVolume] = useState(70000);
-  const [contractHorizon, setContractHorizon] = useState(30);
-  const [forecastDate, setForecastDate] = useState(new Date().toISOString().slice(0, 10));
-  const [currentRate, setCurrentRate] = useState(21.8);
-  const [bunkerRate, setBunkerRate] = useState(4.2);
-  const [daysSinceStart, setDaysSinceStart] = useState(365);
-  const [forecasts, setForecasts] = useState<FreightForecast[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState('');
-  const [modelOnline, setModelOnline] = useState<boolean | null>(null);
-  const [recentScenarios, setRecentScenarios] = useState<SavedScenario[]>(() => {
-    try {
-      const stored = localStorage.getItem(scenarioStorageKey);
-      return stored ? (JSON.parse(stored) as SavedScenario[]) : [];
-    } catch {
-      return [];
-    }
-  });
+  const [selectedId, setSelectedId] = useState('australia');
+  const [range, setRange] = useState('Sep 2025 – Sep 2026');
+  const [compareMessage, setCompareMessage] = useState(false);
+  const selected = regions.find((region) => region.id === selectedId) ?? regions[0];
 
-  const vesselByCargo =
-    vesselClasses.find((item) => cargoVolume <= item.capacity) ?? vesselClasses[3];
-  const portLimit = Math.min(ports[origin].maxClass, ports[destination].maxClass);
-  const recommendedVessel = vesselClasses[Math.min(vesselByCargo.rank, portLimit) - 1];
-  const portConstraint = vesselByCargo.rank > portLimit;
-  const selectedForecast = forecasts.find((item) => item.forecast_days === contractHorizon);
-  const lowestForecast = forecasts.length
-    ? forecasts.reduce((lowest, item) =>
-        item.predicted_freight_rate_usd_mt < lowest.predicted_freight_rate_usd_mt ? item : lowest,
-      )
-    : undefined;
-  const chartValues = [currentRate, ...forecasts.map((item) => item.predicted_freight_rate_usd_mt)];
-  const chartMin = Math.min(...chartValues) - 1;
-  const chartRange = Math.max(1, Math.max(...chartValues) - chartMin + 1);
-  const chartPoints = chartValues
-    .map((value, index) => {
-      const x = 42 + index * 100;
-      const y = 214 - ((value - chartMin) / chartRange) * 160;
-      return x + ',' + y;
-    })
-    .join(' ');
-
-  useEffect(() => {
-    const checkModel = async () => {
-      try {
-        const status = await getModelStatus();
-        setModelOnline(status.status === 'ok');
-      } catch {
-        setModelOnline(false);
-      }
-    };
-    void checkModel();
-    const timer = window.setInterval(() => void checkModel(), 30000);
-    return () => window.clearInterval(timer);
-  }, []);
-
-  const persistScenario = (results: FreightForecast[]) => {
-    const scenario: SavedScenario = {
-      id: Date.now().toString(),
-      savedAt: new Date().toLocaleString(),
-      origin,
-      destination,
-      cargoVolume,
-      currentRate,
-      bunkerRate,
-      forecasts: results,
-    };
-    const next = [scenario, ...recentScenarios].slice(0, 4);
-    setRecentScenarios(next);
-    localStorage.setItem(scenarioStorageKey, JSON.stringify(next));
-  };
-
-  const loadScenario = (scenario: SavedScenario) => {
-    setOrigin(scenario.origin);
-    setDestination(scenario.destination);
-    setCargoVolume(scenario.cargoVolume);
-    setCurrentRate(scenario.currentRate);
-    setBunkerRate(scenario.bunkerRate);
-    setForecasts(scenario.forecasts);
-  };
-
-  const exportReport = () => {
-    if (!forecasts.length) return;
-    const rows = [
-      ['SeaNexus freight forecast report'],
-      ['Route', origin + ' to ' + destination],
-      ['Cargo volume MT', cargoVolume.toString()],
-      ['Current freight USD/MT', currentRate.toString()],
-      [],
-      ['Forecast day', 'Prediction USD/MT', 'Change USD/MT', 'Change percent', 'Direction'],
-      ...forecasts.map((item) => [
-        item.forecast_days.toString(),
-        item.predicted_freight_rate_usd_mt.toString(),
-        item.change_usd_mt.toString(),
-        item.change_percent.toString(),
-        item.direction,
-      ]),
-    ];
-    const csv = rows.map((row) => row.join(',')).join('\n');
-    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+  function exportReport(): void {
+    const report = [
+      ['SeaNexus market intelligence report'],
+      ['Region', selected.name],
+      ['Period', range],
+      ['Exports', selected.exports],
+      ['Indicative freight', selected.freightRate],
+      ['Note', 'Prototype market-feed placeholder'],
+    ].map((row) => row.join(',')).join('\n');
+    const url = URL.createObjectURL(new Blob([report], { type: 'text/csv' }));
     const link = document.createElement('a');
     link.href = url;
-    link.download = 'seanexus-freight-forecast.csv';
+    link.download = `seanexus-${selected.id}-market-report.csv`;
     link.click();
     URL.revokeObjectURL(url);
-  };
-
-  const runModel = async () => {
-    setIsLoading(true);
-    setError('');
-    try {
-      const results = await getFreightForecast({
-        dayOfYear: dateToDayOfYear(forecastDate),
-        freightRateUsdMt: currentRate,
-        bunkerPriceUsdMt: bunkerRate,
-        daysSinceStart,
-      });
-      setForecasts(results);
-      persistScenario(results);
-    } catch {
-      setError(
-        'Forecast unavailable. Make sure the backend and the Python ML service are both running.',
-      );
-    } finally {
-      setIsLoading(false);
-    }
-  };
+  }
 
   return (
-    <section className="mx-auto max-w-7xl space-y-6">
-      <div className="relative overflow-hidden rounded-3xl bg-slate-950 px-6 py-8 text-white shadow-xl sm:px-9">
-        <div className="absolute -right-16 -top-24 h-72 w-72 rounded-full bg-cyan-400/15 blur-3xl" />
-        <div className="relative flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <p className="text-sm font-semibold tracking-wide text-cyan-300">
-              SEANEXUS / MARKET INTELLIGENCE
-            </p>
-            <h1 className="mt-2 text-3xl font-bold tracking-tight sm:text-4xl">
-              Make the freight decision before the market moves.
-            </h1>
-            <p className="mt-3 max-w-2xl leading-6 text-slate-300">
-              Run the connected CatBoost model, compare its 14, 30 and 60-day predictions, then
-              check vessel feasibility for the selected ports.
-            </p>
-          </div>
-          <span
-            className={
-              modelOnline
-                ? 'w-fit rounded-full border border-emerald-300/30 bg-emerald-300/10 px-3 py-1.5 text-xs font-semibold text-emerald-100'
-                : 'w-fit rounded-full border border-amber-300/30 bg-amber-300/10 px-3 py-1.5 text-xs font-semibold text-amber-100'
-            }
-          >
-            {modelOnline
-              ? '● Model online · 3 horizons'
-              : modelOnline === false
-                ? '● Model offline · check Python service'
-                : 'Checking model connection…'}
-          </span>
+    <section className="mx-auto w-full max-w-[1280px] space-y-3 text-[#17345d]">
+      <header className="flex items-end justify-between">
+        <div>
+          <p className="text-[11px] font-bold tracking-[.25em] text-[#617a96]">MARKET INTELLIGENCE</p>
+          <h1 className="mt-1 text-3xl font-extrabold tracking-tight text-[#12396e] sm:text-4xl">Global Insights. Local Advantage.</h1>
+          <p className="mt-1 text-[17px] text-[#55708e]">Track supply, demand, trade flows and geopolitical developments to make informed chartering decisions.</p>
         </div>
-      </div>
+        <div className="flex shrink-0 gap-3">
+          <select className="h-10 rounded-md border border-[#d8e6ef] bg-white px-4 text-xs font-semibold text-[#385573] shadow-sm transition hover:border-[#a8cde7]" onChange={(event) => setRange(event.target.value)} value={range}>
+            <option>Sep 2025 – Sep 2026</option><option>Last 6 months</option><option>Last 3 years</option>
+          </select>
+          <button className="h-10 rounded-md border border-[#cde2f1] bg-[#edf8ff] px-4 text-xs font-bold text-[#176fbf] shadow-sm transition hover:bg-[#dff2ff]" onClick={exportReport} type="button">⇩ Export Report</button>
+        </div>
+      </header>
 
-      <div className="grid gap-6 lg:grid-cols-[390px_1fr]">
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            void runModel();
-          }}
-          className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
-        >
-          <h2 className="text-lg font-bold text-slate-900">Forecast inputs</h2>
-          <p className="mt-1 text-sm text-slate-500">
-            These values are sent to your trained model.
-          </p>
-          <label className="mt-5 block text-sm font-semibold text-slate-700">
-            Forecast date
-            <input
-              required
-              type="date"
-              value={forecastDate}
-              onChange={(event) => setForecastDate(event.target.value)}
-              className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5"
-            />
-          </label>
-          <div className="mt-4 grid grid-cols-2 gap-3">
-            <label className="block text-sm font-semibold text-slate-700">
-              Current rate
-              <input
-                required
-                min="0.1"
-                step="0.01"
-                type="number"
-                value={currentRate}
-                onChange={(event) => setCurrentRate(Number(event.target.value))}
-                className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5"
-              />
-            </label>
-            <label className="block text-sm font-semibold text-slate-700">
-              Bunker cost
-              <input
-                required
-                min="0.1"
-                step="0.01"
-                type="number"
-                value={bunkerRate}
-                onChange={(event) => setBunkerRate(Number(event.target.value))}
-                className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5"
-              />
-            </label>
-          </div>
-          <label className="mt-4 block text-sm font-semibold text-slate-700">
-            Days since training-data start
-            <input
-              required
-              min="0"
-              type="number"
-              value={daysSinceStart}
-              onChange={(event) => setDaysSinceStart(Number(event.target.value))}
-              className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5"
-            />
-          </label>
-          <button
-            disabled={isLoading}
-            className="mt-5 w-full rounded-lg bg-slate-950 py-3 font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {isLoading ? 'Running model…' : 'Run forecast'}
+      <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(6, minmax(0, 1fr))' }}>
+        {regions.map((region) => (
+          <button className={`flex items-center gap-3 overflow-hidden rounded-lg border px-3 text-left ${region.id === selected.id ? 'border-[#0b7bdd] bg-[#edf8ff]' : 'border-[#dceaf2] bg-white'}`} key={region.id} onClick={() => setSelectedId(region.id)} style={{ height: 74 }} type="button">
+            <span className="grid h-10 w-12 shrink-0 place-items-center rounded bg-[#f3f8fc] text-2xl">{region.flag}</span>
+            <span className="min-w-0"><b className="block truncate text-sm text-[#20466f]">{region.name}</b><small className="mt-1 block truncate text-[11px] text-[#617b95]">{region.description}</small></span>
           </button>
-          {error ? (
-            <p className="mt-3 rounded-lg bg-rose-50 p-3 text-sm text-rose-700">{error}</p>
-          ) : null}
-        </form>
+        ))}
+        <button className="flex items-center justify-center gap-3 rounded-lg border border-[#dceaf2] bg-white text-sm font-bold text-[#1772c2]" onClick={() => setCompareMessage((value) => !value)} style={{ height: 74 }} type="button">▥ Compare Regions</button>
+      </div>
+      {compareMessage ? <p className="rounded-md border border-[#cfe3f0] bg-[#f5fbff] px-3 py-2 text-xs text-[#46627f]">Comparison is a placeholder until a multi-region market-data source is connected.</p> : null}
 
-        <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-            <div>
-              <h2 className="text-lg font-bold text-slate-900">Freight-rate forecast</h2>
-              <p className="mt-1 text-sm text-slate-500">
-                Current input plus actual outputs returned from the model.
-              </p>
-            </div>
-            <div className="flex rounded-lg bg-slate-100 p-1">
-              {[14, 30, 60].map((item) => (
-                <button
-                  key={item}
-                  type="button"
-                  onClick={() => setContractHorizon(item)}
-                  className={
-                    contractHorizon === item
-                      ? 'rounded-md bg-white px-3 py-1.5 text-sm font-semibold text-slate-900 shadow-sm'
-                      : 'px-3 py-1.5 text-sm text-slate-500'
-                  }
-                >
-                  {item}d
-                </button>
-              ))}
+      <div className="grid gap-3" style={{ gridTemplateColumns: '1.38fr .92fr 1fr', height: 264 }}>
+        <Panel title={`${selected.name} Market Overview`}>
+          <div className="grid gap-4" style={{ gridTemplateColumns: '205px minmax(0, 1fr)' }}>
+            <VisualPlaceholder label="Market image placeholder" />
+            <div className="text-xs" style={{ display: 'grid', gap: 4 }}>
+              <OverviewLine icon="♜" label="Coal Exports (2025 YTD)" value={selected.exports} trend="▲ +6.8% YoY" />
+              <OverviewLine icon="♧" label="Major Export Ports" value={selected.ports} />
+              <OverviewLine icon="↗" label="Avg. Freight Rate to India" value={selected.freightRate} trend="▲ +12% vs last quarter" />
+              <OverviewLine icon="▣" label="Key Commodities" value={selected.commodities} />
             </div>
           </div>
-          {forecasts.length ? (
-            <>
-              <div className="mt-5 grid gap-3 sm:grid-cols-3">
-                {forecasts.map((item) => (
-                  <div
-                    key={item.forecast_days}
-                    className={
-                      item.forecast_days === contractHorizon
-                        ? 'rounded-xl border border-cyan-300 bg-cyan-50 p-4 shadow-sm'
-                        : 'rounded-xl border border-slate-200 p-4'
-                    }
-                  >
-                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                      {item.forecast_days}-day output
-                    </p>
-                    <b className="mt-2 block text-xl text-slate-950">
-                      {formatCurrency(item.predicted_freight_rate_usd_mt)}
-                    </b>
-                    <p
-                      className={
-                        item.change_usd_mt > 0
-                          ? 'mt-2 text-sm text-amber-700'
-                          : 'mt-2 text-sm text-emerald-700'
-                      }
-                    >
-                      {item.direction} {Math.abs(item.change_percent)}%
-                    </p>
-                  </div>
-                ))}
-              </div>
-              <div className="mt-5 overflow-hidden rounded-xl border border-slate-100 bg-[linear-gradient(180deg,#f0fdfa,#f8fafc)] p-3">
-                <svg
-                  viewBox="0 0 360 240"
-                  className="h-64 w-full"
-                  aria-label="Model forecast chart"
-                >
-                  <line x1="42" y1="214" x2="342" y2="214" stroke="#cbd5e1" />
-                  <line x1="42" y1="30" x2="42" y2="214" stroke="#cbd5e1" />
-                  <polygon
-                    points={'42,214 ' + chartPoints + ' 342,214'}
-                    fill="#0891b2"
-                    opacity="0.12"
-                  />
-                  <polyline
-                    points={chartPoints}
-                    fill="none"
-                    stroke="#0891b2"
-                    strokeWidth="4"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                  {chartPoints.split(' ').map((point) => (
-                    <circle
-                      key={point}
-                      cx={Number(point.split(',')[0])}
-                      cy={Number(point.split(',')[1])}
-                      r="6"
-                      fill="#fff"
-                      stroke="#0891b2"
-                      strokeWidth="4"
-                    />
-                  ))}
-                  <text x="34" y="232" textAnchor="middle" fill="#64748b" fontSize="12">
-                    Now
-                  </text>
-                  <text x="142" y="232" textAnchor="middle" fill="#64748b" fontSize="12">
-                    14d
-                  </text>
-                  <text x="242" y="232" textAnchor="middle" fill="#64748b" fontSize="12">
-                    30d
-                  </text>
-                  <text x="342" y="232" textAnchor="middle" fill="#64748b" fontSize="12">
-                    60d
-                  </text>
-                </svg>
-              </div>
-              <div className="mt-4 flex justify-end">
-                <button
-                  onClick={exportReport}
-                  type="button"
-                  className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
-                >
-                  Download forecast CSV
-                </button>
-              </div>
-            </>
-          ) : (
-            <div className="mt-6 grid min-h-72 place-items-center rounded-xl border border-dashed border-slate-300 bg-slate-50 p-8 text-center">
-              <div>
-                <p className="font-semibold text-slate-700">No prediction yet</p>
-                <p className="mt-1 text-sm text-slate-500">
-                  Run the model to display its real 14, 30 and 60-day outputs here.
-                </p>
-              </div>
-            </div>
-          )}
-        </article>
+        </Panel>
+        <Panel title={`Export Volume Trend (${selected.name} → India)`} subtitle="Million Tonnes">
+          <ExportChart />
+          <Legend items={[['■', 'Actual', 'text-[#176bb9]'], ['■', 'Forecast', 'text-[#a8cff0]']]} />
+        </Panel>
+        <Panel title={`Freight Rate Trend (${selected.name} → India)`} subtitle="USD / day">
+          <FreightChart />
+          <Legend items={[['━', 'Historical Rate', 'text-[#1479d6]'], ['┄', 'Forecast', 'text-[#58728c]'], ['━', 'Confidence Band', 'text-[#8cbed6]']]} />
+        </Panel>
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[390px_1fr]">
-        <form
-          className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
-          onSubmit={(event) => event.preventDefault()}
-        >
-          <h2 className="text-lg font-bold text-slate-900">Cargo & port constraints</h2>
-          <p className="mt-1 text-sm text-slate-500">
-            Rule-based feasibility check using the documented port constraints.
-          </p>
-          <label className="mt-5 block text-sm font-semibold text-slate-700">
-            Loading port
-            <select
-              value={origin}
-              onChange={(event) => setOrigin(event.target.value as PortName)}
-              className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5"
-            >
-              {Object.keys(ports).map((port) => (
-                <option key={port}>{port}</option>
-              ))}
-            </select>
-          </label>
-          <label className="mt-4 block text-sm font-semibold text-slate-700">
-            Discharge port
-            <select
-              value={destination}
-              onChange={(event) => setDestination(event.target.value as PortName)}
-              className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5"
-            >
-              {Object.keys(ports).map((port) => (
-                <option key={port}>{port}</option>
-              ))}
-            </select>
-          </label>
-          <label className="mt-4 block text-sm font-semibold text-slate-700">
-            Cargo volume (MT)
-            <input
-              required
-              min="1"
-              type="number"
-              value={cargoVolume}
-              onChange={(event) => setCargoVolume(Number(event.target.value))}
-              className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5"
-            />
-          </label>
-        </form>
-        <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <h2 className="text-lg font-bold text-slate-900">Chartering decision</h2>
-          <div className="mt-5 grid gap-4 sm:grid-cols-3">
-            <div className="rounded-xl bg-slate-950 p-4 text-white">
-              <p className="text-xs uppercase tracking-wide text-slate-400">Recommended vessel</p>
-              <b className="mt-2 block text-2xl">{recommendedVessel.name}</b>
-              <p className="mt-2 text-sm text-slate-400">
-                {recommendedVessel.capacity.toLocaleString()} MT capacity ·{' '}
-                {recommendedVessel.draft} draft
-              </p>
-            </div>
-            <div className="rounded-xl bg-slate-50 p-4">
-              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                Port assessment
-              </p>
-              <b
-                className={
-                  portConstraint
-                    ? 'mt-2 block text-lg text-amber-700'
-                    : 'mt-2 block text-lg text-emerald-700'
-                }
-              >
-                {portConstraint ? 'Cargo class constrained' : 'Feasible route'}
-              </b>
-              <p className="mt-2 text-sm text-slate-600">
-                {origin}: {ports[origin].draft} · {destination}: {ports[destination].draft}
-              </p>
-            </div>
-            <div className="rounded-xl bg-slate-50 p-4">
-              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                Market entry
-              </p>
-              <b className="mt-2 block text-lg text-slate-900">
-                {lowestForecast
-                  ? 'Review ' + lowestForecast.forecast_days + '-day window'
-                  : 'Run model first'}
-              </b>
-              <p className="mt-2 text-sm text-slate-600">
-                {lowestForecast
-                  ? 'Lowest model output: ' +
-                    formatCurrency(lowestForecast.predicted_freight_rate_usd_mt)
-                  : 'Recommendation is calculated from your model outputs.'}
-              </p>
-            </div>
-          </div>
-          <div className="mt-4 rounded-lg border border-slate-200 p-4 text-sm text-slate-600">
-            <b className="text-slate-900">Reasoning: </b>
-            {portConstraint
-              ? 'The cargo-volume vessel class exceeds a port restriction, so the vessel recommendation is reduced to the largest feasible class. Consider splitting the cargo into voyages.'
-              : 'The cargo class is feasible for both selected ports under the reference rules.'}{' '}
-            {selectedForecast
-              ? ' The selected ' +
-                contractHorizon +
-                '-day model output is ' +
-                formatCurrency(selectedForecast.predicted_freight_rate_usd_mt) +
-                '.'
-              : ''}
-          </div>
-        </article>
+      <div className="grid gap-3" style={{ gridTemplateColumns: '1.28fr .91fr 1fr', height: 226 }}>
+        <Panel title="Supply vs Demand Outlook" subtitle="Million Tonnes"><SupplyChart /><Legend items={[['━', 'Supply', 'text-[#1479d6]'], ['━', 'Demand', 'text-[#15a674]']]} /></Panel>
+        <Panel title="Key Market Drivers"><div className="mt-1 divide-y divide-[#e8f0f4]">{drivers.map(([icon, label, impact, tone]) => <div className="grid items-center gap-2 text-xs" key={label} style={{ gridTemplateColumns: '25px minmax(0, 1fr) auto', padding: '5px 0' }}><span className="grid h-6 w-6 place-items-center rounded-full bg-[#eef7ff] text-[#1978cb]">{icon}</span><span className="text-[#4c6682]">{label}</span><b className={tone}>↗ {impact}</b></div>)}</div></Panel>
+        <Panel title="Recent Developments" action="View All →"><div className="mt-1 divide-y divide-[#e8f0f4]">{developments.map(([dot, headline, date]) => <div className="grid gap-2 text-xs" key={headline} style={{ gridTemplateColumns: '11px minmax(0, 1fr) 70px', padding: '5px 0' }}><i className={`mt-1 h-2.5 w-2.5 rounded-full ${dot}`} /><span className="text-[#4e6885]">{headline}</span><time className="text-right text-[10px] text-slate-400">{date}</time></div>)}</div></Panel>
       </div>
-      {recentScenarios.length ? (
-        <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <div className="flex items-center justify-between">
-            <div>
-              <h2 className="text-lg font-bold text-slate-900">Recent forecast scenarios</h2>
-              <p className="text-sm text-slate-500">Saved in this browser after each model run.</p>
-            </div>
-            <span className="text-xs font-semibold text-slate-400">LOCAL</span>
-          </div>
-          <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            {recentScenarios.map((scenario) => (
-              <button
-                type="button"
-                onClick={() => loadScenario(scenario)}
-                key={scenario.id}
-                className="rounded-xl border border-slate-200 p-4 text-left transition hover:border-cyan-400 hover:bg-cyan-50"
-              >
-                <p className="font-semibold text-slate-900">
-                  {scenario.origin} → {scenario.destination}
-                </p>
-                <p className="mt-1 text-sm text-slate-500">
-                  {scenario.cargoVolume.toLocaleString()} MT · {scenario.savedAt}
-                </p>
-                <p className="mt-3 text-sm font-semibold text-cyan-700">Load scenario</p>
-              </button>
-            ))}
-          </div>
-        </article>
-      ) : null}
+
+      <div className="grid gap-3" style={{ gridTemplateColumns: '1.25fr 1fr .93fr', height: 214 }}>
+        <Panel title={`Top Trade Routes from ${selected.name}`}>
+          <table className="mt-2 w-full text-left text-[10px]"><thead className="border-y border-[#e7eff4] text-[#6b8299]"><tr><th className="py-2">ROUTE</th><th>AVG. RATE<br />(USD/day)</th><th>AVG. DURATION<br />(days)</th><th>DEMAND TREND</th></tr></thead><tbody>{[['Newcastle → Paradip', '18,200', '19 – 21', 'High'], ['Hay Point → Vizag', '17,800', '18 – 20', 'High'], ['Gladstone → Dhamra', '19,100', '20 – 23', 'Moderate'], ['Abbot Point → Haldia', '20,300', '21 – 24', 'Moderate']].map(([route, rate, duration, trend]) => <tr className="border-b border-[#edf2f5] text-[#48637e]" key={route}><td className="py-2 font-medium">{route}</td><td>{rate}</td><td>{duration}</td><td className={trend === 'High' ? 'font-bold text-emerald-600' : 'font-bold text-amber-600'}>● {trend}</td></tr>)}</tbody></table>
+        </Panel>
+        <Panel title={`Commodity Breakdown (${selected.name} Exports)`}><div className="mt-3 flex items-center gap-5"><CommodityDonut /><div className="space-y-3 text-[11px] text-[#4e6885]"><p><i className="mr-2 inline-block h-2 w-2 rounded-full bg-[#174d8b]" />Thermal Coal <b className="ml-5">68%</b></p><p><i className="mr-2 inline-block h-2 w-2 rounded-full bg-[#318bdf]" />Metallurgical Coal <b className="ml-5">22%</b></p><p><i className="mr-2 inline-block h-2 w-2 rounded-full bg-orange-400" />LNG <b className="ml-5">6%</b></p><p><i className="mr-2 inline-block h-2 w-2 rounded-full bg-slate-400" />Others <b className="ml-5">4%</b></p></div></div></Panel>
+        <Panel title="Market Sentiment"><div className="grid place-items-center pt-2"><SentimentGauge /><b className="mt-2 text-lg text-[#13815d]">Bullish</b><p className="mt-1 text-center text-xs leading-5 text-[#59728a]">Strong demand and stable supply<br />outlook for next 6 months</p></div></Panel>
+      </div>
     </section>
   );
 }
+
+function Panel({ title, subtitle, action, children }: { title: string; subtitle?: string; action?: string; children: ReactNode }) {
+  return <article className="overflow-hidden rounded-xl border border-[#dceaf2] bg-white p-3 shadow-sm ring-1 ring-[#f4f9fc]" style={{ height: '100%', minWidth: 0 }}><div className="flex items-start justify-between gap-2"><div><h2 className="text-base font-extrabold text-[#153a70]">{title}</h2>{subtitle ? <p className="mt-1 text-[10px] text-[#617b94]">{subtitle}</p> : null}</div>{action ? <button className="text-xs font-bold text-[#0f75cb] transition hover:text-[#095da6]" type="button">{action}</button> : null}</div>{children}</article>;
+}
+
+function VisualPlaceholder({ label }: { label: string }) { return <div className="grid place-items-center rounded-lg text-center shadow-inner" style={{ background: 'linear-gradient(145deg, #d7b28c 0%, #7e9eab 45%, #24587d 100%)', height: 199 }}><span><b className="block text-4xl text-white">⚓</b><small className="mt-2 block rounded bg-white/80 px-2 py-1 text-[10px] text-[#294a6b]">{label}</small></span></div>; }
+function OverviewLine({ icon, label, value, trend }: { icon: string; label: string; value: string; trend?: string }) { return <div className="grid gap-2" style={{ gridTemplateColumns: '28px minmax(0, 1fr)', minHeight: 42 }}><span className="grid h-6 w-6 place-items-center rounded-full bg-[#eef7ff] text-[#1978cb]">{icon}</span><span className="min-w-0"><small className="block text-[9px] leading-3 text-[#607991]">{label}</small><b className="block truncate text-[11px] leading-4 text-[#244a73]">{value}</b>{trend ? <em className="not-italic text-[9px] font-bold text-emerald-600">{trend}</em> : null}</span></div>; }
+function Legend({ items }: { items: Array<[string, string, string]> }) { return <div className="mt-1 flex justify-center gap-4 text-[10px]">{items.map(([symbol, label, tone]) => <span className={tone} key={label}>{symbol} {label}</span>)}</div>; }
+function ExportChart() { return <svg aria-label="Export volume placeholder chart" className="mt-2 w-full" style={{ height: 157 }} viewBox="0 0 310 170" preserveAspectRatio="none"><ChartGrid /><g>{[71,79,82,87,100,107,117,132,145].map((height,index) => <rect fill={index > 6 ? '#a8cff0' : '#176bb9'} height={height} key={index} rx="3" width="17" x={28 + index * 29} y={151 - height} />)}</g><ChartMonths /></svg>; }
+function FreightChart() { return <svg aria-label="Freight rate placeholder chart" className="mt-2 w-full" style={{ height: 157 }} viewBox="0 0 310 170" preserveAspectRatio="none"><ChartGrid /><path d="M20 48 L55 62 L90 71 L125 77 L160 82" fill="none" stroke="#1479d6" strokeWidth="3" /><path d="M160 82 C202 81 240 75 290 66" fill="none" stroke="#1479d6" strokeDasharray="7 6" strokeWidth="3" /><path d="M160 70 C202 76 240 63 290 46 L290 99 C240 111 202 101 160 96Z" fill="#bde2e7" opacity=".55" /><circle cx="290" cy="66" fill="#1479d6" r="4" /><ChartMonths /></svg>; }
+function SupplyChart() { return <svg aria-label="Supply demand placeholder chart" className="mt-2 w-full" style={{ height: 124 }} viewBox="0 0 440 150" preserveAspectRatio="none"><g stroke="#e4edf3">{[20,50,80,110,140].map((y) => <line key={y} x1="28" x2="425" y1={y} y2={y} />)}</g><rect fill="#e0f6ee" height="120" width="74" x="351" y="20" /><path d="M28 87 L93 76 L158 70 L223 68 L288 62 L353 49 L420 45" fill="none" stroke="#1479d6" strokeWidth="3" /><path d="M28 101 L93 91 L158 86 L223 80 L288 76 L353 70 L420 65" fill="none" stroke="#15a674" strokeWidth="3" />{['2023','2024','2025','2026','2027'].map((year,index) => <text fill="#71879c" fontSize="10" key={year} x={27 + index * 98} y="149">{year}</text>)}</svg>; }
+function ChartGrid() { return <g stroke="#e4edf3">{[18,50,82,114,146].map((y) => <line key={y} x1="20" x2="300" y1={y} y2={y} />)}</g>; }
+function ChartMonths() { return <g>{['Jan','Mar','May','Jul','Sep'].map((month,index) => <text fill="#71879c" fontSize="9" key={month} x={20 + index * 67} y="168">{month}</text>)}</g>; }
+function CommodityDonut() { return <div className="grid h-36 w-36 place-items-center rounded-full" style={{ background: 'conic-gradient(#174d8b 0 68%,#318bdf 68% 90%,#f6a12a 90% 96%,#9aacbf 96% 100%)' }}><div className="grid h-20 w-20 place-items-center rounded-full bg-white text-center"><b className="text-xl text-[#173b70]">412 Mt</b><small className="-mt-1 text-[10px] text-slate-500">Total</small></div></div>; }
+function SentimentGauge() { return <svg aria-label="Bullish market sentiment" height="74" viewBox="0 0 160 80" width="160"><path d="M20 70 A60 60 0 0 1 140 70" fill="none" stroke="#e7eff4" strokeWidth="14" /><path d="M20 70 A60 60 0 0 1 54 18" fill="none" stroke="#f05a55" strokeWidth="14" /><path d="M54 18 A60 60 0 0 1 96 12" fill="none" stroke="#ffb52b" strokeWidth="14" /><path d="M96 12 A60 60 0 0 1 140 70" fill="none" stroke="#16aa70" strokeWidth="14" /><line stroke="#173b70" strokeLinecap="round" strokeWidth="4" x1="80" x2="113" y1="70" y2="31" /><circle cx="80" cy="70" fill="#173b70" r="6" /></svg>; }

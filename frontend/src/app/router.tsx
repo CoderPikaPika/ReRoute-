@@ -18,6 +18,7 @@ import { FreightForecastPage } from '../pages/FreightForecastPage';
 import { RoutePlannerPage } from '../pages/RoutePlannerPage';
 import { PortsPage } from '../pages/PortsPage';
 import { PlanCharterPage } from '../pages/PlanCharterPage';
+import { ContractsPage } from '../pages/ContractsPage';
 
 export const router = createBrowserRouter([
   {
@@ -58,6 +59,7 @@ export const router = createBrowserRouter([
           { path: '/route-planner', element: <RoutePlannerPage /> },
           { path: '/ports', element: <PortsPage /> },
           { path: '/plan-charter', element: <PlanCharterPage /> },
+          { path: '/contracts', element: <ContractsPage /> },
         ],
       },
     ],
